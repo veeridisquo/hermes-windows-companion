@@ -258,8 +258,8 @@ function Update-TrayDisplay {
     if (-not $script:HermesPath -or $script:LastError) {
         $script:TrayIcon.Icon = $script:MutedIcon
         $script:TrayIcon.Text = 'Hermes Companion - unavailable'
-        $script:GatewaySummaryItem.Text = 'Gateway          Unavailable'
-        $script:DashboardSummaryItem.Text = 'Dashboard       Unknown'
+        $script:GatewaySummaryItem.Text = 'Gateway: unavailable'
+        $script:DashboardSummaryItem.Text = 'Dashboard: unknown'
         $script:OpenDashboardItem.Enabled = $false
         $script:DesktopItem.Enabled = $false
         $script:StartDashboardItem.Enabled = $false
@@ -282,8 +282,8 @@ function Update-TrayDisplay {
 
     $gatewayText = if ($script:GatewayRunning) { 'running' } else { 'stopped' }
     $dashboardText = if ($script:DashboardRunning) { 'running' } else { 'stopped' }
-    $script:GatewaySummaryItem.Text = "Gateway          $gatewayText"
-    $script:DashboardSummaryItem.Text = "Dashboard       $dashboardText"
+    $script:GatewaySummaryItem.Text = "Gateway: $gatewayText"
+    $script:DashboardSummaryItem.Text = "Dashboard: $dashboardText"
     $script:OpenDashboardItem.Enabled = $true
     $script:DesktopItem.Enabled = $true
     $script:StartDashboardItem.Enabled = -not $script:DashboardRunning
@@ -478,10 +478,10 @@ function Set-StartupEnabled {
         elseif (Test-Path -LiteralPath $script:StartupShortcut) {
             Remove-Item -LiteralPath $script:StartupShortcut -Force
         }
-        $script:StartupItem.Checked = Test-Path -LiteralPath $script:StartupShortcut
+        $script:StartupItem.ShortcutKeyDisplayString = if (Test-Path -LiteralPath $script:StartupShortcut) { 'On' } else { 'Off' }
     }
     catch {
-        $script:StartupItem.Checked = Test-Path -LiteralPath $script:StartupShortcut
+        $script:StartupItem.ShortcutKeyDisplayString = if (Test-Path -LiteralPath $script:StartupShortcut) { 'On' } else { 'Off' }
         Show-CompanionError "Could not update startup settings.`n`n$($_.Exception.Message)"
     }
 }
@@ -495,7 +495,7 @@ function Add-MenuHeading {
     $heading = New-Object System.Windows.Forms.ToolStripLabel $Text.ToUpperInvariant()
     $heading.ForeColor = [System.Drawing.SystemColors]::GrayText
     $heading.Font = New-Object System.Drawing.Font $Menu.Font, ([System.Drawing.FontStyle]::Bold)
-    $heading.Margin = New-Object System.Windows.Forms.Padding 4, 6, 4, 2
+    $heading.Margin = New-Object System.Windows.Forms.Padding 4, 3, 4, 0
     $Menu.Items.Add($heading) | Out-Null
 }
 
@@ -513,20 +513,20 @@ $script:TrayIcon.Text = 'Hermes Companion - checking status'
 $script:TrayIcon.Visible = $true
 
 $menu = New-Object System.Windows.Forms.ContextMenuStrip
-$menu.MinimumSize = New-Object System.Drawing.Size 270, 0
+$menu.MinimumSize = New-Object System.Drawing.Size 230, 0
 $menu.ShowImageMargin = $false
-$menu.ShowCheckMargin = $true
+$menu.ShowCheckMargin = $false
 
 $titleItem = New-Object System.Windows.Forms.ToolStripLabel 'Hermes Companion'
 $titleItem.Font = New-Object System.Drawing.Font $menu.Font, ([System.Drawing.FontStyle]::Bold)
 $titleItem.Margin = New-Object System.Windows.Forms.Padding 4, 4, 4, 4
 $menu.Items.Add($titleItem) | Out-Null
 
-$script:GatewaySummaryItem = New-Object System.Windows.Forms.ToolStripLabel 'Gateway          Checking...'
+$script:GatewaySummaryItem = New-Object System.Windows.Forms.ToolStripLabel 'Gateway: checking...'
 $script:GatewaySummaryItem.Margin = New-Object System.Windows.Forms.Padding 4, 0, 4, 0
 $menu.Items.Add($script:GatewaySummaryItem) | Out-Null
 
-$script:DashboardSummaryItem = New-Object System.Windows.Forms.ToolStripLabel 'Dashboard       Checking...'
+$script:DashboardSummaryItem = New-Object System.Windows.Forms.ToolStripLabel 'Dashboard: checking...'
 $script:DashboardSummaryItem.Margin = New-Object System.Windows.Forms.Padding 4, 0, 4, 4
 $menu.Items.Add($script:DashboardSummaryItem) | Out-Null
 $menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
@@ -594,9 +594,9 @@ $menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
 Add-MenuHeading -Menu $menu -Text 'Preferences'
 
 $script:StartupItem = New-Object System.Windows.Forms.ToolStripMenuItem 'Start with Windows'
-$script:StartupItem.CheckOnClick = $true
-$script:StartupItem.Checked = Test-Path -LiteralPath $script:StartupShortcut
-$script:StartupItem.add_Click({ Set-StartupEnabled $script:StartupItem.Checked })
+$script:StartupItem.ShowShortcutKeys = $true
+$script:StartupItem.ShortcutKeyDisplayString = if (Test-Path -LiteralPath $script:StartupShortcut) { 'On' } else { 'Off' }
+$script:StartupItem.add_Click({ Set-StartupEnabled (-not (Test-Path -LiteralPath $script:StartupShortcut)) })
 $menu.Items.Add($script:StartupItem) | Out-Null
 $menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
 
