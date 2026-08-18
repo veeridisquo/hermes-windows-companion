@@ -258,7 +258,16 @@ function Update-TrayDisplay {
     if (-not $script:HermesPath -or $script:LastError) {
         $script:TrayIcon.Icon = $script:MutedIcon
         $script:TrayIcon.Text = 'Hermes Companion - unavailable'
-        $script:StatusItem.Text = 'Status: Hermes unavailable'
+        $script:GatewaySummaryItem.Text = 'Gateway          Unavailable'
+        $script:DashboardSummaryItem.Text = 'Dashboard       Unknown'
+        $script:OpenDashboardItem.Enabled = $false
+        $script:DesktopItem.Enabled = $false
+        $script:StartDashboardItem.Enabled = $false
+        $script:StopDashboardItem.Enabled = $false
+        $script:GatewayStatusItem.Enabled = $false
+        $script:GatewayStartItem.Enabled = $false
+        $script:GatewayStopItem.Enabled = $false
+        $script:GatewayRestartItem.Enabled = $false
         return
     }
 
@@ -273,7 +282,16 @@ function Update-TrayDisplay {
 
     $gatewayText = if ($script:GatewayRunning) { 'running' } else { 'stopped' }
     $dashboardText = if ($script:DashboardRunning) { 'running' } else { 'stopped' }
-    $script:StatusItem.Text = "Gateway: $gatewayText | Dashboard: $dashboardText"
+    $script:GatewaySummaryItem.Text = "Gateway          $gatewayText"
+    $script:DashboardSummaryItem.Text = "Dashboard       $dashboardText"
+    $script:OpenDashboardItem.Enabled = $true
+    $script:DesktopItem.Enabled = $true
+    $script:StartDashboardItem.Enabled = -not $script:DashboardRunning
+    $script:StopDashboardItem.Enabled = $script:DashboardRunning
+    $script:GatewayStatusItem.Enabled = $true
+    $script:GatewayStartItem.Enabled = -not $script:GatewayRunning
+    $script:GatewayStopItem.Enabled = $script:GatewayRunning
+    $script:GatewayRestartItem.Enabled = $script:GatewayRunning
 }
 
 function Test-DashboardEndpoint {
@@ -468,6 +486,19 @@ function Set-StartupEnabled {
     }
 }
 
+function Add-MenuHeading {
+    param(
+        [System.Windows.Forms.ContextMenuStrip]$Menu,
+        [string]$Text
+    )
+
+    $heading = New-Object System.Windows.Forms.ToolStripLabel $Text.ToUpperInvariant()
+    $heading.ForeColor = [System.Drawing.SystemColors]::GrayText
+    $heading.Font = New-Object System.Drawing.Font $Menu.Font, ([System.Drawing.FontStyle]::Bold)
+    $heading.Margin = New-Object System.Windows.Forms.Padding 4, 6, 4, 2
+    $Menu.Items.Add($heading) | Out-Null
+}
+
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 $createdNew = $false
 $script:SingleInstanceMutex = New-Object System.Threading.Mutex($true, "Local\HermesCompanion_$identity", [ref]$createdNew)
@@ -482,46 +513,73 @@ $script:TrayIcon.Text = 'Hermes Companion - checking status'
 $script:TrayIcon.Visible = $true
 
 $menu = New-Object System.Windows.Forms.ContextMenuStrip
-$script:StatusItem = New-Object System.Windows.Forms.ToolStripMenuItem 'Status: checking...'
-$script:StatusItem.Enabled = $false
-$menu.Items.Add($script:StatusItem) | Out-Null
+$menu.MinimumSize = New-Object System.Drawing.Size 270, 0
+$menu.ShowImageMargin = $false
+$menu.ShowCheckMargin = $true
+
+$titleItem = New-Object System.Windows.Forms.ToolStripLabel 'Hermes Companion'
+$titleItem.Font = New-Object System.Drawing.Font $menu.Font, ([System.Drawing.FontStyle]::Bold)
+$titleItem.Margin = New-Object System.Windows.Forms.Padding 4, 4, 4, 4
+$menu.Items.Add($titleItem) | Out-Null
+
+$script:GatewaySummaryItem = New-Object System.Windows.Forms.ToolStripLabel 'Gateway          Checking...'
+$script:GatewaySummaryItem.Margin = New-Object System.Windows.Forms.Padding 4, 0, 4, 0
+$menu.Items.Add($script:GatewaySummaryItem) | Out-Null
+
+$script:DashboardSummaryItem = New-Object System.Windows.Forms.ToolStripLabel 'Dashboard       Checking...'
+$script:DashboardSummaryItem.Margin = New-Object System.Windows.Forms.Padding 4, 0, 4, 4
+$menu.Items.Add($script:DashboardSummaryItem) | Out-Null
 $menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
 
-$openDashboardItem = New-Object System.Windows.Forms.ToolStripMenuItem 'Open Dashboard'
-$openDashboardItem.add_Click({ Open-Dashboard })
-$menu.Items.Add($openDashboardItem) | Out-Null
+Add-MenuHeading -Menu $menu -Text 'Open'
 
-$startDashboardItem = New-Object System.Windows.Forms.ToolStripMenuItem 'Start Dashboard'
-$startDashboardItem.add_Click({ Start-Dashboard })
-$menu.Items.Add($startDashboardItem) | Out-Null
+$script:OpenDashboardItem = New-Object System.Windows.Forms.ToolStripMenuItem 'Dashboard'
+$script:OpenDashboardItem.ToolTipText = 'Open the Hermes browser dashboard'
+$script:OpenDashboardItem.add_Click({ Open-Dashboard })
+$menu.Items.Add($script:OpenDashboardItem) | Out-Null
 
-$stopDashboardItem = New-Object System.Windows.Forms.ToolStripMenuItem 'Stop Dashboard'
-$stopDashboardItem.add_Click({ Stop-Dashboard })
-$menu.Items.Add($stopDashboardItem) | Out-Null
+$script:DesktopItem = New-Object System.Windows.Forms.ToolStripMenuItem 'Desktop app'
+$script:DesktopItem.ToolTipText = 'Open the Hermes desktop application'
+$script:DesktopItem.add_Click({ Open-HermesDesktop })
+$menu.Items.Add($script:DesktopItem) | Out-Null
+$menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
 
-$desktopItem = New-Object System.Windows.Forms.ToolStripMenuItem 'Open Hermes Desktop'
-$desktopItem.add_Click({ Open-HermesDesktop })
-$menu.Items.Add($desktopItem) | Out-Null
+Add-MenuHeading -Menu $menu -Text 'Services'
 
-$gatewayMenu = New-Object System.Windows.Forms.ToolStripMenuItem 'Gateway'
-$gatewayStatusItem = New-Object System.Windows.Forms.ToolStripMenuItem 'Show Status'
-$gatewayStatusItem.add_Click({ Show-GatewayStatus })
-$gatewayMenu.DropDownItems.Add($gatewayStatusItem) | Out-Null
+$dashboardMenu = New-Object System.Windows.Forms.ToolStripMenuItem 'Dashboard service'
+$script:StartDashboardItem = New-Object System.Windows.Forms.ToolStripMenuItem 'Start'
+$script:StartDashboardItem.add_Click({ Start-Dashboard })
+$dashboardMenu.DropDownItems.Add($script:StartDashboardItem) | Out-Null
+$script:StopDashboardItem = New-Object System.Windows.Forms.ToolStripMenuItem 'Stop'
+$script:StopDashboardItem.add_Click({ Stop-Dashboard })
+$dashboardMenu.DropDownItems.Add($script:StopDashboardItem) | Out-Null
+$menu.Items.Add($dashboardMenu) | Out-Null
+
+$gatewayMenu = New-Object System.Windows.Forms.ToolStripMenuItem 'Gateway service'
+$script:GatewayStatusItem = New-Object System.Windows.Forms.ToolStripMenuItem 'View detailed status'
+$script:GatewayStatusItem.add_Click({ Show-GatewayStatus })
+$gatewayMenu.DropDownItems.Add($script:GatewayStatusItem) | Out-Null
 $gatewayMenu.DropDownItems.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
 
-foreach ($action in @('Start', 'Stop', 'Restart')) {
-    $actionItem = New-Object System.Windows.Forms.ToolStripMenuItem "$action Gateway"
-    $capturedAction = $action.ToLowerInvariant()
-    $actionItem.add_Click({ Invoke-GatewayAction $capturedAction }.GetNewClosure())
-    $gatewayMenu.DropDownItems.Add($actionItem) | Out-Null
-}
+$script:GatewayStartItem = New-Object System.Windows.Forms.ToolStripMenuItem 'Start'
+$script:GatewayStartItem.add_Click({ Invoke-GatewayAction 'start' })
+$gatewayMenu.DropDownItems.Add($script:GatewayStartItem) | Out-Null
+$script:GatewayStopItem = New-Object System.Windows.Forms.ToolStripMenuItem 'Stop'
+$script:GatewayStopItem.add_Click({ Invoke-GatewayAction 'stop' })
+$gatewayMenu.DropDownItems.Add($script:GatewayStopItem) | Out-Null
+$script:GatewayRestartItem = New-Object System.Windows.Forms.ToolStripMenuItem 'Restart'
+$script:GatewayRestartItem.add_Click({ Invoke-GatewayAction 'restart' })
+$gatewayMenu.DropDownItems.Add($script:GatewayRestartItem) | Out-Null
 $menu.Items.Add($gatewayMenu) | Out-Null
+$menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
 
-$refreshItem = New-Object System.Windows.Forms.ToolStripMenuItem 'Refresh Status'
+Add-MenuHeading -Menu $menu -Text 'Tools'
+
+$refreshItem = New-Object System.Windows.Forms.ToolStripMenuItem 'Refresh status'
 $refreshItem.add_Click({ Request-StatusRefresh })
 $menu.Items.Add($refreshItem) | Out-Null
 
-$logsItem = New-Object System.Windows.Forms.ToolStripMenuItem 'Open Hermes Logs'
+$logsItem = New-Object System.Windows.Forms.ToolStripMenuItem 'Open logs folder'
 $logsItem.add_Click({
     if (Test-Path -LiteralPath $script:LogsPath) {
         Start-Process explorer.exe -ArgumentList ('"' + $script:LogsPath + '"')
@@ -533,13 +591,16 @@ $logsItem.add_Click({
 $menu.Items.Add($logsItem) | Out-Null
 $menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
 
+Add-MenuHeading -Menu $menu -Text 'Preferences'
+
 $script:StartupItem = New-Object System.Windows.Forms.ToolStripMenuItem 'Start with Windows'
 $script:StartupItem.CheckOnClick = $true
 $script:StartupItem.Checked = Test-Path -LiteralPath $script:StartupShortcut
 $script:StartupItem.add_Click({ Set-StartupEnabled $script:StartupItem.Checked })
 $menu.Items.Add($script:StartupItem) | Out-Null
+$menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
 
-$exitItem = New-Object System.Windows.Forms.ToolStripMenuItem 'Exit Hermes Companion'
+$exitItem = New-Object System.Windows.Forms.ToolStripMenuItem 'Exit'
 $menu.Items.Add($exitItem) | Out-Null
 
 $script:TrayIcon.ContextMenuStrip = $menu
