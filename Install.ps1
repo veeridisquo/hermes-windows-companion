@@ -12,7 +12,7 @@ $installDirectory = Join-Path $env:LOCALAPPDATA 'Programs\Hermes Companion'
 $startMenuDirectory = Join-Path ([Environment]::GetFolderPath('Programs')) 'Hermes Companion'
 $startMenuShortcut = Join-Path $startMenuDirectory 'Hermes Companion.lnk'
 $startupShortcut = Join-Path ([Environment]::GetFolderPath('Startup')) 'Hermes Companion.lnk'
-$requiredFiles = @('HermesCompanion.ps1', 'HermesCompanion.vbs', 'Uninstall.ps1', 'LICENSE', 'README.md')
+$requiredFiles = @('HermesCompanion.ps1', 'HermesCompanion.vbs', 'hermes-agent.ico', 'hermes-agent.png', 'Uninstall.ps1', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'README.md')
 
 foreach ($file in $requiredFiles) {
     $source = Join-Path $PSScriptRoot $file
@@ -30,6 +30,7 @@ foreach ($file in $requiredFiles) {
 
 $shell = New-Object -ComObject WScript.Shell
 $launcherPath = Join-Path $installDirectory 'HermesCompanion.vbs'
+$iconPath = Join-Path $installDirectory 'hermes-agent.ico'
 $wscriptPath = Join-Path $env:SystemRoot 'System32\wscript.exe'
 
 $shortcut = $shell.CreateShortcut($startMenuShortcut)
@@ -37,6 +38,7 @@ $shortcut.TargetPath = $wscriptPath
 $shortcut.Arguments = '"' + $launcherPath + '"'
 $shortcut.WorkingDirectory = $installDirectory
 $shortcut.Description = 'Manage Hermes Agent from the Windows notification area'
+$shortcut.IconLocation = "$iconPath,0"
 $shortcut.Save()
 
 if (-not $NoAutoStart) {
@@ -45,6 +47,7 @@ if (-not $NoAutoStart) {
     $shortcut.Arguments = '"' + $launcherPath + '"'
     $shortcut.WorkingDirectory = $installDirectory
     $shortcut.Description = 'Start Hermes Companion at Windows login'
+    $shortcut.IconLocation = "$iconPath,0"
     $shortcut.Save()
 }
 

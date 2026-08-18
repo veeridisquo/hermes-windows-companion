@@ -22,6 +22,8 @@ public static class HermesCompanionNativeMethods
 $script:AppName = 'Hermes Companion'
 $script:DashboardUrl = 'http://127.0.0.1:9119'
 $script:LogsPath = Join-Path $env:LOCALAPPDATA 'hermes\logs'
+$script:IconPath = Join-Path $PSScriptRoot 'hermes-agent.ico'
+$script:IconImagePath = Join-Path $PSScriptRoot 'hermes-agent.png'
 $script:StartupShortcut = Join-Path ([Environment]::GetFolderPath('Startup')) 'Hermes Companion.lnk'
 $script:HermesPath = $null
 $script:ActiveOperation = $null
@@ -201,14 +203,29 @@ function New-StatusIcon {
     $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
     $graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
     $graphics.Clear([System.Drawing.Color]::Transparent)
+
+    $baseImage = $null
+    if (Test-Path -LiteralPath $script:IconImagePath) {
+        $baseImage = [System.Drawing.Image]::FromFile($script:IconImagePath)
+        $graphics.DrawImage($baseImage, 0, 0, 16, 16)
+    }
+
     $brush = New-Object System.Drawing.SolidBrush $Color
-    $pen = New-Object System.Drawing.Pen ([System.Drawing.Color]::FromArgb(150, 0, 0, 0)), 1
-    $graphics.FillEllipse($brush, 2, 2, 11, 11)
-    $graphics.DrawEllipse($pen, 2, 2, 11, 11)
+    $outlinePen = New-Object System.Drawing.Pen ([System.Drawing.Color]::White), 2
+    if ($baseImage) {
+        $graphics.FillEllipse($brush, 10, 10, 5, 5)
+        $graphics.DrawEllipse($outlinePen, 9, 9, 6, 6)
+    }
+    else {
+        $graphics.FillEllipse($brush, 2, 2, 11, 11)
+        $graphics.DrawEllipse($outlinePen, 2, 2, 11, 11)
+    }
+
     $handle = $bitmap.GetHicon()
     $icon = [System.Drawing.Icon]::FromHandle($handle).Clone()
     [HermesCompanionNativeMethods]::DestroyIcon($handle) | Out-Null
-    $pen.Dispose()
+    if ($baseImage) { $baseImage.Dispose() }
+    $outlinePen.Dispose()
     $brush.Dispose()
     $graphics.Dispose()
     $bitmap.Dispose()
@@ -430,6 +447,9 @@ function Set-StartupEnabled {
             $shortcut.Arguments = '"' + $launcherPath + '"'
             $shortcut.WorkingDirectory = $PSScriptRoot
             $shortcut.Description = 'Start Hermes Companion at Windows login'
+            if (Test-Path -LiteralPath $script:IconPath) {
+                $shortcut.IconLocation = "$script:IconPath,0"
+            }
             $shortcut.Save()
         }
         elseif (Test-Path -LiteralPath $script:StartupShortcut) {
