@@ -196,8 +196,8 @@ function Complete-ActiveOperation {
     }
 }
 
-function New-StatusIcon {
-    param([System.Drawing.Color]$Color)
+function New-TrayIcon {
+    param([switch]$Muted)
 
     $bitmap = New-Object System.Drawing.Bitmap 16, 16
     $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
@@ -209,32 +209,38 @@ function New-StatusIcon {
         $baseImage = [System.Drawing.Image]::FromFile($script:IconImagePath)
         $graphics.DrawImage($baseImage, 0, 0, 16, 16)
     }
-
-    $brush = New-Object System.Drawing.SolidBrush $Color
-    $outlinePen = New-Object System.Drawing.Pen ([System.Drawing.Color]::White), 2
-    if ($baseImage) {
-        $graphics.FillEllipse($brush, 10, 10, 5, 5)
-        $graphics.DrawEllipse($outlinePen, 9, 9, 6, 6)
-    }
     else {
+        $fallbackColor = if ($Muted) { [System.Drawing.Color]::Gray } else { [System.Drawing.Color]::White }
+        $brush = New-Object System.Drawing.SolidBrush $fallbackColor
         $graphics.FillEllipse($brush, 2, 2, 11, 11)
-        $graphics.DrawEllipse($outlinePen, 2, 2, 11, 11)
+        $brush.Dispose()
+    }
+
+    if ($baseImage) { $baseImage.Dispose() }
+    $graphics.Dispose()
+
+    if ($Muted) {
+        for ($x = 0; $x -lt $bitmap.Width; $x++) {
+            for ($y = 0; $y -lt $bitmap.Height; $y++) {
+                $pixel = $bitmap.GetPixel($x, $y)
+                if ($pixel.A -gt 0) {
+                    $gray = [int][Math]::Round((($pixel.R + $pixel.G + $pixel.B) / 3) * 0.55)
+                    $alpha = [int][Math]::Round($pixel.A * 0.55)
+                    $bitmap.SetPixel($x, $y, [System.Drawing.Color]::FromArgb($alpha, $gray, $gray, $gray))
+                }
+            }
+        }
     }
 
     $handle = $bitmap.GetHicon()
     $icon = [System.Drawing.Icon]::FromHandle($handle).Clone()
     [HermesCompanionNativeMethods]::DestroyIcon($handle) | Out-Null
-    if ($baseImage) { $baseImage.Dispose() }
-    $outlinePen.Dispose()
-    $brush.Dispose()
-    $graphics.Dispose()
     $bitmap.Dispose()
     return $icon
 }
 
-$script:GreenIcon = New-StatusIcon ([System.Drawing.Color]::FromArgb(38, 166, 91))
-$script:YellowIcon = New-StatusIcon ([System.Drawing.Color]::FromArgb(245, 166, 35))
-$script:RedIcon = New-StatusIcon ([System.Drawing.Color]::FromArgb(208, 57, 64))
+$script:ActiveIcon = New-TrayIcon
+$script:MutedIcon = New-TrayIcon -Muted
 
 function Show-Notification {
     param(
@@ -250,23 +256,22 @@ function Show-Notification {
 
 function Update-TrayDisplay {
     if (-not $script:HermesPath -or $script:LastError) {
-        $script:TrayIcon.Icon = $script:RedIcon
+        $script:TrayIcon.Icon = $script:MutedIcon
         $script:TrayIcon.Text = 'Hermes Companion - unavailable'
         $script:StatusItem.Text = 'Status: Hermes unavailable'
         return
     }
 
-    if ($script:GatewayRunning) {
-        $script:TrayIcon.Icon = $script:GreenIcon
-        $script:TrayIcon.Text = 'Hermes Companion - gateway running'
-        $gatewayText = 'running'
+    if ($script:GatewayRunning -or $script:DashboardRunning) {
+        $script:TrayIcon.Icon = $script:ActiveIcon
+        $script:TrayIcon.Text = 'Hermes Companion - active'
     }
     else {
-        $script:TrayIcon.Icon = $script:YellowIcon
-        $script:TrayIcon.Text = 'Hermes Companion - gateway stopped'
-        $gatewayText = 'stopped'
+        $script:TrayIcon.Icon = $script:MutedIcon
+        $script:TrayIcon.Text = 'Hermes Companion - all services stopped'
     }
 
+    $gatewayText = if ($script:GatewayRunning) { 'running' } else { 'stopped' }
     $dashboardText = if ($script:DashboardRunning) { 'running' } else { 'stopped' }
     $script:StatusItem.Text = "Gateway: $gatewayText | Dashboard: $dashboardText"
 }
@@ -472,7 +477,7 @@ if (-not $createdNew) {
 }
 
 $script:TrayIcon = New-Object System.Windows.Forms.NotifyIcon
-$script:TrayIcon.Icon = $script:YellowIcon
+$script:TrayIcon.Icon = $script:MutedIcon
 $script:TrayIcon.Text = 'Hermes Companion - checking status'
 $script:TrayIcon.Visible = $true
 
@@ -572,9 +577,8 @@ finally {
     $script:TrayIcon.Visible = $false
     $script:TrayIcon.Dispose()
     $menu.Dispose()
-    $script:GreenIcon.Dispose()
-    $script:YellowIcon.Dispose()
-    $script:RedIcon.Dispose()
+    $script:ActiveIcon.Dispose()
+    $script:MutedIcon.Dispose()
     $script:SingleInstanceMutex.ReleaseMutex()
     $script:SingleInstanceMutex.Dispose()
 }

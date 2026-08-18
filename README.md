@@ -35,12 +35,11 @@ The **Start with Windows** tray-menu option can enable or disable auto-start lat
 
 ## Use
 
-Right-click the colored circle in the Windows notification area. Windows may initially place it behind the notification-area overflow arrow.
+Right-click the Hermes icon in the Windows notification area. Windows may initially place it behind the notification-area overflow arrow.
 
-- The tray uses the official Hermes Agent icon with a small status badge.
-- Green badge: the Hermes gateway is running.
-- Yellow badge: Hermes is available, but the gateway appears stopped.
-- Red badge: Hermes cannot be found or a status check failed.
+- The normal Hermes icon means the gateway or dashboard is running.
+- A dimmed Hermes icon means both are stopped or Hermes is unavailable.
+- The tray menu and tooltip show the detailed state.
 - Double-click: open or start the Hermes dashboard.
 
 Exiting Hermes Companion closes only the tray application. It does not stop the gateway or dashboard.
@@ -61,7 +60,7 @@ Hermes Companion does not read `.env`, `auth.json`, provider tokens, gateway cre
 
 ## Artwork
 
-The Hermes Agent icon comes from the official [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) project. The PNG renders the live status-badged tray icon, while the ICO is used for Windows shortcuts. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+The Hermes Agent icon comes from the official [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) project. The PNG renders the live tray icon, while the ICO is used for Windows shortcuts. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ## Current limitations
 
