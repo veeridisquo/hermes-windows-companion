@@ -478,10 +478,12 @@ function Set-StartupEnabled {
         elseif (Test-Path -LiteralPath $script:StartupShortcut) {
             Remove-Item -LiteralPath $script:StartupShortcut -Force
         }
-        $script:StartupItem.ShortcutKeyDisplayString = if (Test-Path -LiteralPath $script:StartupShortcut) { 'On' } else { 'Off' }
+        $startupState = if (Test-Path -LiteralPath $script:StartupShortcut) { 'On' } else { 'Off' }
+        $script:StartupItem.Text = "Start with Windows: $startupState"
     }
     catch {
-        $script:StartupItem.ShortcutKeyDisplayString = if (Test-Path -LiteralPath $script:StartupShortcut) { 'On' } else { 'Off' }
+        $startupState = if (Test-Path -LiteralPath $script:StartupShortcut) { 'On' } else { 'Off' }
+        $script:StartupItem.Text = "Start with Windows: $startupState"
         Show-CompanionError "Could not update startup settings.`n`n$($_.Exception.Message)"
     }
 }
@@ -513,7 +515,7 @@ $script:TrayIcon.Text = 'Hermes Companion - checking status'
 $script:TrayIcon.Visible = $true
 
 $menu = New-Object System.Windows.Forms.ContextMenuStrip
-$menu.MinimumSize = New-Object System.Drawing.Size 230, 0
+$menu.AutoSize = $true
 $menu.ShowImageMargin = $false
 $menu.ShowCheckMargin = $false
 
@@ -593,9 +595,8 @@ $menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
 
 Add-MenuHeading -Menu $menu -Text 'Preferences'
 
-$script:StartupItem = New-Object System.Windows.Forms.ToolStripMenuItem 'Start with Windows'
-$script:StartupItem.ShowShortcutKeys = $true
-$script:StartupItem.ShortcutKeyDisplayString = if (Test-Path -LiteralPath $script:StartupShortcut) { 'On' } else { 'Off' }
+$startupState = if (Test-Path -LiteralPath $script:StartupShortcut) { 'On' } else { 'Off' }
+$script:StartupItem = New-Object System.Windows.Forms.ToolStripMenuItem "Start with Windows: $startupState"
 $script:StartupItem.add_Click({ Set-StartupEnabled (-not (Test-Path -LiteralPath $script:StartupShortcut)) })
 $menu.Items.Add($script:StartupItem) | Out-Null
 $menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
