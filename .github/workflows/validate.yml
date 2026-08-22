@@ -1,0 +1,41 @@
+name: Validate
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  powershell-syntax:
+    name: PowerShell syntax
+    runs-on: windows-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Parse PowerShell scripts
+        shell: powershell
+        run: |
+          $failed = $false
+          Get-ChildItem -Path . -Filter '*.ps1' -File | ForEach-Object {
+              $tokens = $null
+              $errors = $null
+              [System.Management.Automation.Language.Parser]::ParseFile(
+                  $_.FullName,
+                  [ref]$tokens,
+                  [ref]$errors
+              ) | Out-Null
+
+              foreach ($parseError in $errors) {
+                  Write-Error "$($_.Name):$($parseError.Extent.StartLineNumber): $($parseError.Message)"
+                  $failed = $true
+              }
+          }
+
+          if ($failed) {
+              throw 'One or more PowerShell scripts contain syntax errors.'
+          }

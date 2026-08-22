@@ -1,3 +1,29 @@
-*.user
-*.log
+# Local secrets and signing material
+.env
+.env.*
+!.env.example
+auth.json
+credentials.json
+secrets.json
+*.key
+*.pem
+*.p12
+*.pfx
+*.jks
+*.keystore
+id_rsa*
+id_ed25519*
+
+# Editors and operating systems
+.idea/
+.vscode/
 .vs/
+*.suo
+*.user
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Runtime files
+*.log
+*.tmp

@@ -1,18 +1,20 @@
 # Hermes Windows Companion
 
-A deliberately small Windows notification-area companion for an existing native [Hermes Agent](https://github.com/NousResearch/hermes-agent) installation.
+A deliberately small, community-maintained Windows notification-area companion for an existing native [Hermes Agent](https://github.com/NousResearch/hermes-agent) installation.
 
 It provides shortcuts for checking and controlling the Hermes gateway, starting or stopping the dashboard, opening Hermes Desktop, and opening logs. It delegates Hermes operations to the official `hermes` CLI.
+
+This project is independent and is not affiliated with or endorsed by Nous Research.
 
 ## Requirements
 
 - Windows 10 or Windows 11
 - Windows PowerShell 5.1 or newer
-- Hermes Agent available as `hermes` on `PATH`
+- Hermes Agent v0.20.x available as `hermes` on `PATH`
 
 ## Install
 
-Run from PowerShell:
+Download or clone this repository, then run from its root directory in PowerShell. Administrator rights are not required.
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\Install.ps1
@@ -54,9 +56,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\Programs\
 
 This removes only Hermes Companion and its shortcuts. It does not change Hermes Agent, gateway tasks, configuration, approvals, or credentials.
 
-## Security scope
+## Privacy and security
 
-Hermes Companion does not read `.env`, `auth.json`, provider tokens, gateway credentials, or model configuration. It does not change Hermes approval settings and never uses `--yolo`.
+Hermes Companion has no telemetry, updater, or outbound network client. It opens the local loopback dashboard and invokes the locally installed `hermes` CLI only when needed for status checks or an action you select. Hermes Agent itself may use the network according to its own configuration.
+
+The companion does not read `.env`, `auth.json`, provider tokens, gateway credentials, or model configuration. It does not change Hermes approval settings and never uses `--yolo`.
+
+Please report vulnerabilities privately as described in [SECURITY.md](SECURITY.md).
 
 ## Artwork
 
@@ -68,3 +74,11 @@ The Hermes Agent icon comes from the official [NousResearch/hermes-agent](https:
 - Dashboard health also checks the local loopback port. If Hermes loses track of a dashboard it launched, an explicit **Stop Dashboard** action can stop the verified Hermes process listening on that port.
 - The first `hermes desktop` launch may take time while Hermes prepares the Desktop application.
 - There is no settings window, updater, telemetry, or chat UI.
+
+## Contributing
+
+Bug reports and focused pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## License
+
+Hermes Windows Companion is available under the [MIT License](LICENSE). The bundled Hermes Agent artwork has separate attribution in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
