@@ -792,26 +792,38 @@ function Get-TerminalLaunch {
 
 function Open-ProfileTerminal {
     <#
-        'hermes -p <name>' is the documented way to target a profile with any
-        command. Both commands here are free of quotes and shell characters,
-        so nothing needs escaping through Windows Terminal into cmd.
+        Windows Terminal is an app execution alias: it hands the request to the
+        Windows Terminal process, which starts the shell from its own
+        environment rather than the companion's. Run the Hermes executable by
+        its resolved path so the launched terminal does not depend on PATH.
     #>
-    param(
-        [string]$Name,
-        [ValidateSet('chat', 'shell')][string]$Mode
+    param([string]$Name)
+
+    if (-not $script:HermesPath) {
+        Show-CompanionError 'Hermes was not found on PATH.'
+        return
+    }
+
+    $title = "Hermes - $Name"
+
+    $lines = @(
+        '@echo off',
+        "title $title",
+        ('call "' + $script:HermesPath + '" -p ' + $Name)
     )
 
-    if ($Mode -eq 'chat') {
-        $title = "Hermes chat: $Name"
-        $command = "hermes -p $Name chat"
+    # One script per profile, rewritten on each launch, so these do not pile
+    # up in the temp directory.
+    $scriptPath = Join-Path $env:TEMP "HermesCompanion-$Name.cmd"
+    try {
+        Set-Content -LiteralPath $scriptPath -Value $lines -Encoding Ascii -ErrorAction Stop
     }
-    else {
-        $title = "Hermes shell: $Name"
-        $prefix = if ($Name -eq 'default') { 'hermes' } else { "hermes -p $Name" }
-        $command = "echo Hermes profile $Name. Run commands as: $prefix"
+    catch {
+        Show-CompanionError "Could not prepare the terminal session.`n`n$($_.Exception.Message)"
+        return
     }
 
-    $launch = Get-TerminalLaunch -Title $title -Command $command
+    $launch = Get-TerminalLaunch -Title $title -Command ('"' + $scriptPath + '"')
     try {
         Start-Process -FilePath $launch.FilePath -ArgumentList $launch.Arguments -ErrorAction Stop
     }
@@ -897,13 +909,9 @@ function Update-ProfileMenu {
         $labels += if ($hermesProfile.GatewayRunning) { 'gateway running' } else { 'gateway stopped' }
         $item = New-Object System.Windows.Forms.ToolStripMenuItem ("$name ($($labels -join ', '))")
 
-        $chatItem = New-Object System.Windows.Forms.ToolStripMenuItem 'Open chat in terminal'
-        $chatItem.add_Click({ Open-ProfileTerminal -Name $name -Mode 'chat' }.GetNewClosure())
-        $item.DropDownItems.Add($chatItem) | Out-Null
-
-        $shellItem = New-Object System.Windows.Forms.ToolStripMenuItem 'Open shell in terminal'
-        $shellItem.add_Click({ Open-ProfileTerminal -Name $name -Mode 'shell' }.GetNewClosure())
-        $item.DropDownItems.Add($shellItem) | Out-Null
+        $terminalItem = New-Object System.Windows.Forms.ToolStripMenuItem 'Open Hermes in terminal'
+        $terminalItem.add_Click({ Open-ProfileTerminal -Name $name }.GetNewClosure())
+        $item.DropDownItems.Add($terminalItem) | Out-Null
 
         $detailsItem = New-Object System.Windows.Forms.ToolStripMenuItem 'View details'
         $detailsItem.add_Click({ Show-ProfileDetails -Name $name }.GetNewClosure())
@@ -1187,8 +1195,21 @@ function Invoke-HermesUpdateProcess {
         update prints a lot and runs for minutes, and a pipe that nobody drains
         until exit would block Hermes once the buffer filled.
     #>
-    $stamp = [Guid]::NewGuid().ToString('N')
-    $logFile = Join-Path $env:TEMP "HermesCompanion-update-$stamp.log"
+    try {
+        New-Item -ItemType Directory -Path $script:LogsPath -Force -ErrorAction Stop | Out-Null
+    }
+    catch {
+        $script:UpdateInProgress = $false
+        Show-CompanionError "Could not prepare the update log.`n`n$($_.Exception.Message)"
+        Restore-DashboardAfterUpdate
+        Update-TrayDisplay
+        return
+    }
+
+    # Keep the latest complete update output where the menu can open it after
+    # the process ends. A temporary log made failure reports point at a file
+    # that was already deleted.
+    $logFile = Join-Path $script:LogsPath 'update.log'
     $commandLine = '"{0}" update < NUL > "{1}" 2>&1' -f $script:HermesPath, $logFile
     $workingDirectory = Get-HermesInstallDirectory
     if (-not $workingDirectory) {
@@ -1429,7 +1450,6 @@ function Complete-UpdateOperation {
 
     if ($operation.Process.HasExited) {
         $operation.Process.Dispose()
-        try { Remove-Item -LiteralPath $operation.LogFile -Force -ErrorAction Stop } catch {}
     }
 
     $script:UpdateOperation = $null

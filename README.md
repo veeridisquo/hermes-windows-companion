@@ -51,7 +51,7 @@ Right-click the Hermes icon in the Windows notification area. Windows may initia
 - **Hermes profiles** lists every profile with its gateway state and marks the active one.
 - Double-click: open or start the Hermes dashboard.
 
-Each profile has a submenu: open a terminal running `hermes -p <name> chat`, open a terminal ready for that profile's commands, view its details, open its folder, and start or stop its gateway. Terminals open in Windows Terminal when it is installed, and in a console window otherwise.
+Each profile has a submenu to open Hermes in a terminal with that profile, view its details, open its folder, and start or stop its gateway. Terminals open in Windows Terminal when it is installed, and in a console window otherwise.
 
 **Check for updates** runs `hermes update --check`, the documented way to ask whether an update is available. It always contacts the upstream repository, so the answer is never a cached one. **Update Hermes...** installs the newest version in the background.
 
