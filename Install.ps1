@@ -8,11 +8,11 @@ Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
 $appName = 'Hermes Companion'
-$installDirectory = Join-Path $env:LOCALAPPDATA 'Programs\Hermes Companion'
+$sourceDirectory = [IO.Path]::GetFullPath($PSScriptRoot)
 $startMenuDirectory = Join-Path ([Environment]::GetFolderPath('Programs')) 'Hermes Companion'
 $startMenuShortcut = Join-Path $startMenuDirectory 'Hermes Companion.lnk'
 $startupShortcut = Join-Path ([Environment]::GetFolderPath('Startup')) 'Hermes Companion.lnk'
-$requiredFiles = @('HermesCompanion.ps1', 'HermesCompanion.vbs', 'hermes-agent.ico', 'hermes-agent.png', 'Uninstall.ps1', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'README.md')
+$requiredFiles = @('HermesCompanion.ps1', 'HermesCompanion.vbs', 'hermes-agent.ico')
 
 foreach ($file in $requiredFiles) {
     $source = Join-Path $PSScriptRoot $file
@@ -21,22 +21,17 @@ foreach ($file in $requiredFiles) {
     }
 }
 
-New-Item -ItemType Directory -Path $installDirectory -Force | Out-Null
 New-Item -ItemType Directory -Path $startMenuDirectory -Force | Out-Null
 
-foreach ($file in $requiredFiles) {
-    Copy-Item -LiteralPath (Join-Path $PSScriptRoot $file) -Destination (Join-Path $installDirectory $file) -Force
-}
-
 $shell = New-Object -ComObject WScript.Shell
-$launcherPath = Join-Path $installDirectory 'HermesCompanion.vbs'
-$iconPath = Join-Path $installDirectory 'hermes-agent.ico'
+$launcherPath = Join-Path $sourceDirectory 'HermesCompanion.vbs'
+$iconPath = Join-Path $sourceDirectory 'hermes-agent.ico'
 $wscriptPath = Join-Path $env:SystemRoot 'System32\wscript.exe'
 
 $shortcut = $shell.CreateShortcut($startMenuShortcut)
 $shortcut.TargetPath = $wscriptPath
 $shortcut.Arguments = '"' + $launcherPath + '"'
-$shortcut.WorkingDirectory = $installDirectory
+$shortcut.WorkingDirectory = $sourceDirectory
 $shortcut.Description = 'Manage Hermes Agent from the Windows notification area'
 $shortcut.IconLocation = "$iconPath,0"
 $shortcut.Save()
@@ -45,16 +40,19 @@ if (-not $NoAutoStart) {
     $shortcut = $shell.CreateShortcut($startupShortcut)
     $shortcut.TargetPath = $wscriptPath
     $shortcut.Arguments = '"' + $launcherPath + '"'
-    $shortcut.WorkingDirectory = $installDirectory
+    $shortcut.WorkingDirectory = $sourceDirectory
     $shortcut.Description = 'Start Hermes Companion at Windows login'
     $shortcut.IconLocation = "$iconPath,0"
     $shortcut.Save()
+}
+elseif (Test-Path -LiteralPath $startupShortcut) {
+    Remove-Item -LiteralPath $startupShortcut -Force
 }
 
 if (-not $NoLaunch) {
     Start-Process -FilePath $wscriptPath -ArgumentList ('"' + $launcherPath + '"')
 }
 
-Write-Host "Installed $appName to: $installDirectory"
+Write-Host "Registered $appName from: $sourceDirectory"
 Write-Host "Start Menu shortcut: $startMenuShortcut"
 Write-Host "Start with Windows: $(-not $NoAutoStart)"

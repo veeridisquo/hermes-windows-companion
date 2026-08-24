@@ -31,6 +31,12 @@ $script:RefreshPending = $false
 $script:GatewayRunning = $false
 $script:DashboardRunning = $false
 $script:LastError = $null
+$script:HermesVersion = $null
+$script:UpdateBehind = $null
+$script:UpdateNotified = $false
+$script:VersionCheckPending = $true
+$script:UpdateInProgress = $false
+$script:UpdateOperation = $null
 
 function Show-CompanionError {
     param([string]$Message)
@@ -89,6 +95,11 @@ function New-HermesProcessStartInfo {
     if ($RedirectOutput) {
         $info.RedirectStandardOutput = $true
         $info.RedirectStandardError = $true
+        # Hermes is a Python program. Force UTF-8 on both sides so the status
+        # and version text parses the same way on every Windows code page.
+        $info.EnvironmentVariables['PYTHONIOENCODING'] = 'utf-8'
+        $info.StandardOutputEncoding = [System.Text.Encoding]::UTF8
+        $info.StandardErrorEncoding = [System.Text.Encoding]::UTF8
     }
 
     return $info
@@ -254,20 +265,41 @@ function Show-Notification {
     $script:TrayIcon.ShowBalloonTip(2500)
 }
 
+function Set-HermesMenuEnabled {
+    param([bool]$Enabled)
+
+    $script:OpenDashboardItem.Enabled = $Enabled
+    $script:DesktopItem.Enabled = $Enabled
+    $script:StartDashboardItem.Enabled = $Enabled
+    $script:StopDashboardItem.Enabled = $Enabled
+    $script:GatewayStatusItem.Enabled = $Enabled
+    $script:GatewayStartItem.Enabled = $Enabled
+    $script:GatewayStopItem.Enabled = $Enabled
+    $script:GatewayRestartItem.Enabled = $Enabled
+    $script:CheckUpdateItem.Enabled = $Enabled
+    $script:UpdateHermesItem.Enabled = $Enabled
+}
+
 function Update-TrayDisplay {
+    $script:VersionSummaryItem.Text = Get-VersionSummaryText
+
+    if ($script:UpdateInProgress) {
+        # Any Hermes command started now would trip the concurrent-process
+        # guard in 'hermes update', so no Hermes action stays available.
+        $script:TrayIcon.Icon = $script:ActiveIcon
+        $script:TrayIcon.Text = 'Hermes Companion - updating Hermes'
+        $script:GatewaySummaryItem.Text = 'Gateway: paused for update'
+        $script:DashboardSummaryItem.Text = 'Dashboard: paused for update'
+        Set-HermesMenuEnabled $false
+        return
+    }
+
     if (-not $script:HermesPath -or $script:LastError) {
         $script:TrayIcon.Icon = $script:MutedIcon
         $script:TrayIcon.Text = 'Hermes Companion - unavailable'
         $script:GatewaySummaryItem.Text = 'Gateway: unavailable'
         $script:DashboardSummaryItem.Text = 'Dashboard: unknown'
-        $script:OpenDashboardItem.Enabled = $false
-        $script:DesktopItem.Enabled = $false
-        $script:StartDashboardItem.Enabled = $false
-        $script:StopDashboardItem.Enabled = $false
-        $script:GatewayStatusItem.Enabled = $false
-        $script:GatewayStartItem.Enabled = $false
-        $script:GatewayStopItem.Enabled = $false
-        $script:GatewayRestartItem.Enabled = $false
+        Set-HermesMenuEnabled $false
         return
     }
 
@@ -278,6 +310,10 @@ function Update-TrayDisplay {
     else {
         $script:TrayIcon.Icon = $script:MutedIcon
         $script:TrayIcon.Text = 'Hermes Companion - all services stopped'
+    }
+
+    if (Test-UpdateAvailable) {
+        $script:TrayIcon.Text += ' - update available'
     }
 
     $gatewayText = if ($script:GatewayRunning) { 'running' } else { 'stopped' }
@@ -292,6 +328,8 @@ function Update-TrayDisplay {
     $script:GatewayStartItem.Enabled = -not $script:GatewayRunning
     $script:GatewayStopItem.Enabled = $script:GatewayRunning
     $script:GatewayRestartItem.Enabled = $script:GatewayRunning
+    $script:CheckUpdateItem.Enabled = $true
+    $script:UpdateHermesItem.Enabled = $true
 }
 
 function Test-DashboardEndpoint {
@@ -333,6 +371,10 @@ function Stop-VerifiedDashboardListener {
 }
 
 function Request-StatusRefresh {
+    if ($script:UpdateInProgress) {
+        return
+    }
+
     if ($script:ActiveOperation) {
         $script:RefreshPending = $true
         return
@@ -458,6 +500,238 @@ function Open-HermesDesktop {
     Start-HermesDetached -Arguments @('desktop') | Out-Null
 }
 
+function Remove-AnsiEscape {
+    param([string]$Text)
+
+    $escape = [char]27
+    return ($Text -replace "$escape\[[0-9;]*[A-Za-z]", '')
+}
+
+function Read-VersionOutput {
+    param([string]$Text)
+
+    $clean = Remove-AnsiEscape $Text
+    $script:HermesVersion = $null
+    $script:UpdateBehind = $null
+
+    if ($clean -match '(?im)^\s*Hermes Agent\s+v?(\S+)') {
+        $script:HermesVersion = $Matches[1]
+    }
+
+    # 'hermes version' reports one of: a commit count behind, an unqualified
+    # 'Update available', 'Up to date', or nothing when it cannot tell.
+    if ($clean -match '(?im)^\s*Update available:\s*(\d+)\s+commits?\s+behind') {
+        $script:UpdateBehind = [int]$Matches[1]
+    }
+    elseif ($clean -match '(?im)^\s*Update available') {
+        $script:UpdateBehind = -1
+    }
+    elseif ($clean -match '(?im)^\s*Up to date') {
+        $script:UpdateBehind = 0
+    }
+}
+
+function Test-UpdateAvailable {
+    return ($null -ne $script:UpdateBehind) -and ($script:UpdateBehind -ne 0)
+}
+
+function Get-UpdateSummaryText {
+    if ($script:UpdateBehind -gt 0) {
+        $commitWord = if ($script:UpdateBehind -eq 1) { 'commit' } else { 'commits' }
+        return "$($script:UpdateBehind) $commitWord behind"
+    }
+    if ($script:UpdateBehind -eq -1) {
+        return 'a newer version is available'
+    }
+    return 'up to date'
+}
+
+function Get-VersionSummaryText {
+    if (-not $script:HermesVersion) {
+        return 'Hermes: version unknown'
+    }
+    if ($null -eq $script:UpdateBehind) {
+        return "Hermes: v$($script:HermesVersion)"
+    }
+    if (Test-UpdateAvailable) {
+        return "Hermes: v$($script:HermesVersion) - update available"
+    }
+    return "Hermes: v$($script:HermesVersion) - up to date"
+}
+
+function Request-VersionCheck {
+    param([switch]$Announce)
+
+    if ($script:UpdateInProgress) {
+        return
+    }
+
+    if (-not $script:HermesPath) {
+        $script:VersionCheckPending = $false
+        $script:HermesVersion = $null
+        $script:UpdateBehind = $null
+        Update-TrayDisplay
+        return
+    }
+
+    # 'hermes version' owns the upstream check and caches its result for six
+    # hours. It can fetch from git, so allow well beyond the normal timeout.
+    $started = Start-HermesOperation -Arguments @('version') -TimeoutSeconds 60 -QuietWhenBusy -OnComplete {
+        param($result)
+
+        $script:VersionCheckPending = $false
+        Read-VersionOutput "$($result.Output)`n$($result.Error)"
+        Update-TrayDisplay
+
+        if (Test-UpdateAvailable) {
+            if (-not $script:UpdateNotified) {
+                $script:UpdateNotified = $true
+                Show-Notification 'Hermes update available' "Installed v$($script:HermesVersion), $(Get-UpdateSummaryText). Use the tray menu to update."
+            }
+        }
+        else {
+            $script:UpdateNotified = $false
+        }
+    }
+
+    if ($started) {
+        $script:VersionCheckPending = $false
+        if ($Announce) {
+            Show-Notification 'Checking for updates' 'Hermes is checking for a newer version.'
+        }
+    }
+    else {
+        $script:VersionCheckPending = $true
+    }
+}
+
+function Start-HermesUpdate {
+    if ($script:UpdateInProgress) {
+        Show-Notification 'Update already running' 'Hermes is still installing an update.'
+        return
+    }
+
+    if (-not $script:HermesPath) {
+        Show-CompanionError 'Hermes was not found on PATH.'
+        return
+    }
+
+    $versionLine = if ($script:HermesVersion) { "Installed version: v$($script:HermesVersion)" } else { 'Installed version: unknown' }
+    $statusLine = if ($null -eq $script:UpdateBehind) { 'Update status: unknown' } else { "Update status: $(Get-UpdateSummaryText)" }
+    $warning = ''
+    if ($script:GatewayRunning -or $script:DashboardRunning) {
+        $warning = "`n`nHermes is running. Hermes pauses its gateway during the update, and it refuses to update while another hermes command is running. Stop the dashboard first if the update fails."
+    }
+
+    $answer = [System.Windows.Forms.MessageBox]::Show(
+        "Update Hermes Agent now?`n`n$versionLine`n$statusLine`n`nThe update runs in the background and can take several minutes. Hermes Companion reports the result in the notification area. Do not run other Hermes commands while it runs.$warning",
+        $script:AppName,
+        [System.Windows.Forms.MessageBoxButtons]::YesNo,
+        [System.Windows.Forms.MessageBoxIcon]::Warning
+    )
+    if ($answer -ne [System.Windows.Forms.DialogResult]::Yes) {
+        return
+    }
+
+    # The update prints a lot and runs for minutes. Redirect through cmd.exe
+    # into files instead of pipes, because a full pipe buffer that nobody
+    # drains until exit would block Hermes.
+    $stamp = [Guid]::NewGuid().ToString('N')
+    $outFile = Join-Path $env:TEMP "HermesCompanion-update-$stamp.out"
+    $errorFile = Join-Path $env:TEMP "HermesCompanion-update-$stamp.err"
+    $commandLine = '"{0}" update --yes > "{1}" 2> "{2}"' -f $script:HermesPath, $outFile, $errorFile
+
+    try {
+        $info = New-Object System.Diagnostics.ProcessStartInfo
+        $info.FileName = Join-Path $env:SystemRoot 'System32\cmd.exe'
+        $info.Arguments = '/s /c "' + $commandLine + '"'
+        $info.UseShellExecute = $false
+        $info.CreateNoWindow = $true
+        $info.WorkingDirectory = [Environment]::GetFolderPath('UserProfile')
+        $info.EnvironmentVariables['PYTHONIOENCODING'] = 'utf-8'
+
+        $process = New-Object System.Diagnostics.Process
+        $process.StartInfo = $info
+        if (-not $process.Start()) {
+            throw 'The Hermes update process did not start.'
+        }
+
+        $script:UpdateOperation = [pscustomobject]@{
+            Process = $process
+            OutputFile = $outFile
+            ErrorFile = $errorFile
+            StartedAt = [DateTime]::UtcNow
+            TimeoutSeconds = 3600
+        }
+        $script:UpdateInProgress = $true
+        Update-TrayDisplay
+        Show-Notification 'Hermes update started' 'The update runs in the background. This can take several minutes.'
+    }
+    catch {
+        Show-CompanionError "Could not start the Hermes update.`n`n$($_.Exception.Message)"
+    }
+}
+
+function Get-UpdateLogTail {
+    param([string]$Path)
+
+    if (-not (Test-Path -LiteralPath $Path)) {
+        return ''
+    }
+
+    try {
+        $lines = @(Get-Content -LiteralPath $Path -Encoding UTF8 -ErrorAction Stop | Where-Object { $_.Trim() })
+        return (Remove-AnsiEscape (($lines | Select-Object -Last 20) -join "`n")).Trim()
+    }
+    catch {
+        return ''
+    }
+}
+
+function Complete-UpdateOperation {
+    $operation = $script:UpdateOperation
+    if (-not $operation) {
+        return
+    }
+
+    $timedOut = ([DateTime]::UtcNow - $operation.StartedAt).TotalSeconds -gt $operation.TimeoutSeconds
+    if (-not $operation.Process.HasExited -and -not $timedOut) {
+        return
+    }
+
+    # A half-finished install is worse than a slow one, so a timed-out update
+    # is reported and released rather than killed.
+    $exitCode = if ($operation.Process.HasExited) { $operation.Process.ExitCode } else { $null }
+    $standardOutput = Get-UpdateLogTail $operation.OutputFile
+    $errorOutput = Get-UpdateLogTail $operation.ErrorFile
+
+    if ($operation.Process.HasExited) {
+        $operation.Process.Dispose()
+        foreach ($file in @($operation.OutputFile, $operation.ErrorFile)) {
+            try { Remove-Item -LiteralPath $file -Force -ErrorAction Stop } catch {}
+        }
+    }
+
+    $script:UpdateOperation = $null
+    $script:UpdateInProgress = $false
+
+    if ($null -eq $exitCode) {
+        Show-CompanionError "The Hermes update is still running after an hour.`n`nHermes Companion stopped watching it. Check the update output before you start Hermes again:`n$($operation.OutputFile)"
+    }
+    elseif ($exitCode -eq 0) {
+        $script:UpdateNotified = $false
+        $script:VersionCheckPending = $true
+        Show-Notification 'Hermes updated' 'The update finished. Hermes Companion is rechecking the version.'
+    }
+    else {
+        $detail = if ($errorOutput) { $errorOutput } elseif ($standardOutput) { $standardOutput } else { 'Hermes returned no output.' }
+        Show-CompanionError "The Hermes update failed with exit code $exitCode.`n`n$detail"
+    }
+
+    Update-TrayDisplay
+    Request-StatusRefresh
+}
+
 function Set-StartupEnabled {
     param([bool]$Enabled)
 
@@ -529,8 +803,12 @@ $script:GatewaySummaryItem.Margin = New-Object System.Windows.Forms.Padding 4, 0
 $menu.Items.Add($script:GatewaySummaryItem) | Out-Null
 
 $script:DashboardSummaryItem = New-Object System.Windows.Forms.ToolStripLabel 'Dashboard: checking...'
-$script:DashboardSummaryItem.Margin = New-Object System.Windows.Forms.Padding 4, 0, 4, 4
+$script:DashboardSummaryItem.Margin = New-Object System.Windows.Forms.Padding 4, 0, 4, 0
 $menu.Items.Add($script:DashboardSummaryItem) | Out-Null
+
+$script:VersionSummaryItem = New-Object System.Windows.Forms.ToolStripLabel 'Hermes: checking...'
+$script:VersionSummaryItem.Margin = New-Object System.Windows.Forms.Padding 4, 0, 4, 4
+$menu.Items.Add($script:VersionSummaryItem) | Out-Null
 $menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
 
 Add-MenuHeading -Menu $menu -Text 'Open'
@@ -581,6 +859,16 @@ $refreshItem = New-Object System.Windows.Forms.ToolStripMenuItem 'Refresh status
 $refreshItem.add_Click({ Request-StatusRefresh })
 $menu.Items.Add($refreshItem) | Out-Null
 
+$script:CheckUpdateItem = New-Object System.Windows.Forms.ToolStripMenuItem 'Check for updates'
+$script:CheckUpdateItem.ToolTipText = 'Ask Hermes whether a newer version is available'
+$script:CheckUpdateItem.add_Click({ Request-VersionCheck -Announce })
+$menu.Items.Add($script:CheckUpdateItem) | Out-Null
+
+$script:UpdateHermesItem = New-Object System.Windows.Forms.ToolStripMenuItem 'Update Hermes...'
+$script:UpdateHermesItem.ToolTipText = 'Install the latest Hermes Agent version'
+$script:UpdateHermesItem.add_Click({ Start-HermesUpdate })
+$menu.Items.Add($script:UpdateHermesItem) | Out-Null
+
 $logsItem = New-Object System.Windows.Forms.ToolStripMenuItem 'Open logs folder'
 $logsItem.add_Click({
     if (Test-Path -LiteralPath $script:LogsPath) {
@@ -610,9 +898,16 @@ $script:TrayIcon.add_DoubleClick({ Open-Dashboard })
 $pollTimer = New-Object System.Windows.Forms.Timer
 $pollTimer.Interval = 250
 $pollTimer.add_Tick({
+    Complete-UpdateOperation
     Complete-ActiveOperation
-    if (-not $script:ActiveOperation -and $script:RefreshPending) {
+    if ($script:ActiveOperation -or $script:UpdateInProgress) {
+        return
+    }
+    if ($script:RefreshPending) {
         Request-StatusRefresh
+    }
+    elseif ($script:VersionCheckPending) {
+        Request-VersionCheck
     }
 })
 $pollTimer.Start()
@@ -635,6 +930,10 @@ finally {
     if ($script:ActiveOperation -and -not $script:ActiveOperation.Process.HasExited) {
         try { $script:ActiveOperation.Process.Kill() } catch {}
         $script:ActiveOperation.Process.Dispose()
+    }
+    if ($script:UpdateOperation) {
+        # Killing a running update would strand a half-installed Hermes.
+        try { $script:UpdateOperation.Process.Dispose() } catch {}
     }
     $script:TrayIcon.Visible = $false
     $script:TrayIcon.Dispose()
