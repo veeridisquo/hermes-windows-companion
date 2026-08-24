@@ -2,7 +2,9 @@
 
 ## Hermes Agent icon
 
-`hermes-agent.ico` and `hermes-agent.png` are resized and recolored derivatives of Hermes Agent application artwork from the official [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) project.
+`hermes-agent.ico` and `hermes-agent.png` are cropped derivatives of Hermes Agent application artwork from the official [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) project.
+
+The `.ico` carries the artwork at 16, 20, 24, 32, 48, 64, 128, and 256 pixels.
 
 Source project: <https://github.com/NousResearch/hermes-agent>
 
