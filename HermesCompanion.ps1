@@ -717,18 +717,39 @@ function Read-ProfileList {
             continue
         }
 
-        $fields = @($stripped -split '\s{2,}')
-        $name = $fields[0].Trim()
-        if ($name -notmatch '^[A-Za-z0-9._-]+$' -or $name -eq 'Profile') {
+        # Hermes pads the profile column only up to fifteen characters, so a
+        # long profile name or display label has no stable whitespace boundary.
+        # The gateway token is the reliable column anchor on every data row.
+        if ($stripped -notmatch '^(?<before>.*?)\s+(?<gateway>running|stopped)\b(?<after>.*)$') {
             continue
         }
 
-        $gateway = if ($fields.Count -ge 3) { $fields[2].Trim() } else { '' }
-        $alias = if ($fields.Count -ge 4 -and $fields[3].Trim() -match '^[A-Za-z0-9._-]+$') { $fields[3].Trim() } else { $null }
+        $beforeGateway = $Matches['before'].Trim()
+        $gateway = $Matches['gateway'].Trim()
+        $remainingFields = @($Matches['after'].Trim() -split '\s{2,}')
+        if ($beforeGateway -notmatch '^(?<label>.+?)\s+(?<model>\S+)$') {
+            continue
+        }
+
+        $label = $Matches['label'].Trim()
+        $model = $Matches['model'].Trim()
+        # Hermes prints display-named profiles as "Display label (canonical-id)".
+        # Commands must use the canonical ID rather than the display label.
+        if ($label -match '^.+\s+\((?<name>[A-Za-z0-9._-]+)\)$') {
+            $name = $Matches['name']
+        }
+        else {
+            $name = $label
+        }
+        if ($name -notmatch '^[A-Za-z0-9._-]+$') {
+            continue
+        }
+
+        $alias = if ($remainingFields.Count -ge 1 -and $remainingFields[0].Trim() -match '^[A-Za-z0-9._-]+$') { $remainingFields[0].Trim() } else { $null }
 
         $profiles += [pscustomobject]@{
             Name = $name
-            Model = if ($fields.Count -ge 2) { $fields[1].Trim() } else { '' }
+            Model = $model
             GatewayRunning = ($gateway -match '(?i)^running')
             GatewayInstalled = $null
             Alias = $alias
@@ -744,16 +765,22 @@ function Request-ProfileRefresh {
         return
     }
 
-    $started = Start-HermesOperation -Arguments @('profile', 'list') -QuietWhenBusy -OnComplete {
+    if (-not (Get-Variable -Scope Script -Name ProfileRefreshGeneration -ErrorAction SilentlyContinue)) {
+        $script:ProfileRefreshGeneration = 0
+    }
+
+    $onComplete = {
         param($result)
 
         $script:ProfileRefreshPending = $false
         if ($result.ExitCode -eq 0) {
+            $script:ProfileRefreshGeneration++
             $script:Profiles = Read-ProfileList "$($result.Output)`n$($result.Error)"
         }
         Update-ProfileMenu
         Request-ProfileGatewayInstallationRefresh
-    }
+    }.GetNewClosure()
+    $started = Start-HermesOperation -Arguments @('profile', 'list') -QuietWhenBusy -OnComplete $onComplete
 
     if ($started) {
         $script:ProfileRefreshPending = $false
@@ -776,7 +803,7 @@ function Get-ProfileGatewayInstalledState {
     if ($clean -match '(?i)Scheduled Task registered|Windows login item installed|Gateway service (?:is )?installed') {
         return $true
     }
-    if ($clean -match '(?is)\b(?:To install|To start):.*?\bgateway install\b|Gateway service is not installed') {
+    if ($clean -match '(?is)\b(?:To install(?:\s+as\s+a\s+Windows\s+Scheduled\s+Task\s+\(auto-start\s+on\s+login\))?|To start):.*?\bgateway install\b|Gateway service (?:is )?not installed') {
         return $false
     }
 
@@ -784,16 +811,62 @@ function Get-ProfileGatewayInstalledState {
 }
 
 function Request-ProfileGatewayInstallationRefresh {
-    param([int]$Index = 0)
+    param(
+        [int]$Index = 0,
+        [int]$Generation = -1
+    )
+
+    if (-not (Get-Variable -Scope Script -Name ProfileRefreshGeneration -ErrorAction SilentlyContinue)) {
+        $script:ProfileRefreshGeneration = 0
+    }
+    if (-not (Get-Variable -Scope Script -Name ProfileGatewayInstallationRefreshInProgress -ErrorAction SilentlyContinue)) {
+        $script:ProfileGatewayInstallationRefreshInProgress = $false
+    }
+    if (-not (Get-Variable -Scope Script -Name ProfileGatewayInstallationRefreshGeneration -ErrorAction SilentlyContinue)) {
+        $script:ProfileGatewayInstallationRefreshGeneration = -1
+    }
+
+    if ($Generation -lt 0) {
+        if ($script:ProfileGatewayInstallationRefreshInProgress) {
+            return
+        }
+        $Generation = $script:ProfileRefreshGeneration
+        $script:ProfileGatewayInstallationRefreshInProgress = $true
+        $script:ProfileGatewayInstallationRefreshGeneration = $Generation
+    }
+
+    # A profile-list refresh replaces the profile objects, so an older chain
+    # must never write its status onto the now-orphaned objects.
+    if ($Generation -ne $script:ProfileRefreshGeneration) {
+        if ($script:ProfileGatewayInstallationRefreshGeneration -eq $Generation) {
+            $script:ProfileGatewayInstallationRefreshInProgress = $false
+            $script:ProfileGatewayInstallationRefreshGeneration = -1
+        }
+        Request-ProfileGatewayInstallationRefresh
+        return
+    }
 
     $profiles = @($script:Profiles)
     if ($script:UpdateInProgress -or -not $script:HermesPath -or $Index -ge $profiles.Count) {
+        if ($script:ProfileGatewayInstallationRefreshGeneration -eq $Generation) {
+            $script:ProfileGatewayInstallationRefreshInProgress = $false
+            $script:ProfileGatewayInstallationRefreshGeneration = -1
+        }
         return
     }
 
     $hermesProfile = $profiles[$Index]
     $onComplete = {
         param($result)
+
+        if ($Generation -ne $script:ProfileRefreshGeneration) {
+            if ($script:ProfileGatewayInstallationRefreshGeneration -eq $Generation) {
+                $script:ProfileGatewayInstallationRefreshInProgress = $false
+                $script:ProfileGatewayInstallationRefreshGeneration = -1
+            }
+            Request-ProfileGatewayInstallationRefresh
+            return
+        }
 
         if ($result.ExitCode -eq 0) {
             $hermesProfile.GatewayInstalled = Get-ProfileGatewayInstalledState "$($result.Output)`n$($result.Error)"
@@ -803,12 +876,16 @@ function Request-ProfileGatewayInstallationRefresh {
         }
 
         Update-ProfileMenu
-        Request-ProfileGatewayInstallationRefresh -Index ($Index + 1)
+        Request-ProfileGatewayInstallationRefresh -Index ($Index + 1) -Generation $Generation
     }.GetNewClosure()
     $started = Start-HermesOperation -Arguments @('-p', $hermesProfile.Name, 'gateway', 'status') -QuietWhenBusy -OnComplete $onComplete
 
     if (-not $started) {
         # A refresh will retry after the command already in flight completes.
+        if ($script:ProfileGatewayInstallationRefreshGeneration -eq $Generation) {
+            $script:ProfileGatewayInstallationRefreshInProgress = $false
+            $script:ProfileGatewayInstallationRefreshGeneration = -1
+        }
         $script:ProfileRefreshPending = $true
     }
 }
@@ -968,7 +1045,17 @@ function Invoke-ProfileGatewayAction {
 }
 
 function Update-ProfileMenu {
+    # Rebuilding an open drop-down collapses it under the cursor. A later
+    # refresh updates it after the user closes the menu.
+    if ($script:ProfilesMenu.DropDown.Visible) {
+        return
+    }
+
+    $removedItems = @($script:ProfilesMenu.DropDownItems)
     $script:ProfilesMenu.DropDownItems.Clear()
+    foreach ($removedItem in $removedItems) {
+        $removedItem.Dispose()
+    }
 
     if (@($script:Profiles).Count -eq 0) {
         $empty = New-Object System.Windows.Forms.ToolStripMenuItem 'No profiles found'
