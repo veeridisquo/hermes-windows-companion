@@ -161,7 +161,6 @@ function Start-HermesDetached {
 }
 
 function Start-HermesOperation {
-    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', '', Justification = 'The .NET event signature requires the positional sender parameter.')]
     param(
         [string[]]$Arguments,
         [scriptblock]$OnComplete,
@@ -188,31 +187,14 @@ function Start-HermesOperation {
         $info = New-HermesProcessStartInfo -Arguments $Arguments -RedirectOutput
         $process = New-Object System.Diagnostics.Process
         $process.StartInfo = $info
-        $outputBuilder = New-Object System.Text.StringBuilder
-        $errorBuilder = New-Object System.Text.StringBuilder
-        # Process events drain each pipe as data arrives, so a chatty Hermes
-        # failure cannot block on a full pipe before it exits.
-        $outputDataReceived = {
-            param($eventSource, $receivedEventArgs)
-
-            if ($null -ne $receivedEventArgs.Data) {
-                [void]$outputBuilder.AppendLine($receivedEventArgs.Data)
-            }
-        }.GetNewClosure()
-        $errorDataReceived = {
-            param($eventSource, $receivedEventArgs)
-
-            if ($null -ne $receivedEventArgs.Data) {
-                [void]$errorBuilder.AppendLine($receivedEventArgs.Data)
-            }
-        }.GetNewClosure()
-        $process.add_OutputDataReceived($outputDataReceived)
-        $process.add_ErrorDataReceived($errorDataReceived)
         if (-not $process.Start()) {
             throw 'The Hermes process did not start.'
         }
-        $process.BeginOutputReadLine()
-        $process.BeginErrorReadLine()
+        # StreamReader owns the background reads. PowerShell scriptblock event
+        # handlers cannot run safely on Process pipe threads in Windows
+        # PowerShell 5.1 because those threads have no runspace context.
+        $outputTask = $process.StandardOutput.ReadToEndAsync()
+        $errorTask = $process.StandardError.ReadToEndAsync()
 
         $script:ActiveOperation = [pscustomobject]@{
             Process = $process
@@ -220,10 +202,8 @@ function Start-HermesOperation {
             OnComplete = $OnComplete
             StartedAt = [DateTime]::UtcNow
             TimeoutSeconds = $TimeoutSeconds
-            OutputBuilder = $outputBuilder
-            ErrorBuilder = $errorBuilder
-            OutputDataReceived = $outputDataReceived
-            ErrorDataReceived = $errorDataReceived
+            OutputTask = $outputTask
+            ErrorTask = $errorTask
         }
         return $true
     }
@@ -272,18 +252,18 @@ function Complete-ActiveOperation {
         }
     }
     else {
-        # Wait once more after exit so the asynchronous readers receive their
-        # final lines before their builders are converted to result strings.
+        # Process exit closes both pipes. Await their readers before building
+        # the result so the final output is never truncated.
         $operation.Process.WaitForExit()
+        $output = $operation.OutputTask.GetAwaiter().GetResult()
+        $errorOutput = $operation.ErrorTask.GetAwaiter().GetResult()
         $result = [pscustomobject]@{
             ExitCode = $operation.Process.ExitCode
-            Output = $operation.OutputBuilder.ToString().Trim()
-            Error = $operation.ErrorBuilder.ToString().Trim()
+            Output = $output.Trim()
+            Error = $errorOutput.Trim()
         }
     }
 
-    $operation.Process.remove_OutputDataReceived($operation.OutputDataReceived)
-    $operation.Process.remove_ErrorDataReceived($operation.ErrorDataReceived)
     $operation.Process.Dispose()
     $script:ActiveOperation = $null
 
