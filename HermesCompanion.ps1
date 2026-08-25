@@ -1287,6 +1287,16 @@ function Invoke-ProfileGatewayAction {
     Start-HermesOperation -Arguments @('-p', $Name, 'gateway', $Action) -OnComplete $onComplete | Out-Null
 }
 
+function New-ProfileMenu {
+    $profilesMenu = New-Object System.Windows.Forms.ToolStripMenuItem 'Hermes profiles'
+    $profilesMenu.ToolTipText = 'Profiles configured in Hermes'
+    # A refresh can finish while the user is looking at the submenu. Rebuild
+    # after it closes so the loaded profiles are not stranded behind the
+    # placeholder until another manual refresh.
+    $profilesMenu.add_DropDownClosed({ Update-ProfileMenu })
+    return $profilesMenu
+}
+
 function Update-ProfileMenu {
     # Rebuilding an open drop-down collapses it under the cursor. A later
     # refresh updates it after the user closes the menu.
@@ -2152,8 +2162,7 @@ $menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
 
 Add-MenuHeading -Menu $menu -Text 'Profiles'
 
-$script:ProfilesMenu = New-Object System.Windows.Forms.ToolStripMenuItem 'Hermes profiles'
-$script:ProfilesMenu.ToolTipText = 'Profiles configured in Hermes'
+$script:ProfilesMenu = New-ProfileMenu
 $menu.Items.Add($script:ProfilesMenu) | Out-Null
 Update-ProfileMenu
 $menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
