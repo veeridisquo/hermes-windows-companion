@@ -20,7 +20,7 @@ jobs:
       - name: Parse PowerShell scripts
         shell: powershell
         run: |
-          Get-ChildItem -Path . -Filter '*.ps1' -File | ForEach-Object {
+          Get-ChildItem -Path . -Filter '*.ps1' -File -Recurse | ForEach-Object {
               $tokens = $null
               $errors = $null
               [System.Management.Automation.Language.Parser]::ParseFile(
@@ -50,10 +50,7 @@ jobs:
       - name: Analyze PowerShell scripts
         shell: powershell
         run: |
-          # Pester makes BeforeAll variables visible to Its at runtime, but PSUseDeclaredVarsMoreThanAssignments is lexical.
-          $paths = @(Get-ChildItem -Path $PWD -Filter '*.ps1' -File -Recurse | Where-Object {
-              $_.FullName -notlike "$($PWD)\tests\*"
-          })
+          $paths = @(Get-ChildItem -Path $PWD -Filter '*.ps1' -File -Recurse)
           Write-Host "Analyzing $($paths.Count) PowerShell script(s)."
           if ($paths.Count -eq 0) {
               throw 'No PowerShell scripts found to analyze.'
@@ -73,8 +70,8 @@ jobs:
               throw "PSScriptAnalyzer found $($failures.Count) error(s) or warning(s)."
           }
 
-  parser-tests:
-    name: Parser tests
+  tests:
+    name: PowerShell tests
     runs-on: windows-latest
     timeout-minutes: 10
 
@@ -86,7 +83,7 @@ jobs:
         shell: powershell
         run: Install-Module -Name Pester -MinimumVersion 5.0.0 -Repository PSGallery -Scope CurrentUser -Force
 
-      - name: Run parser tests
+      - name: Run tests
         shell: powershell
         run: |
           Import-Module Pester -MinimumVersion 5.0.0 -Force

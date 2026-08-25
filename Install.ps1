@@ -53,6 +53,6 @@ if (-not $NoLaunch) {
     Start-Process -FilePath $wscriptPath -ArgumentList ('"' + $launcherPath + '"')
 }
 
-Write-Host "Registered $appName from: $sourceDirectory"
-Write-Host "Start Menu shortcut: $startMenuShortcut"
-Write-Host "Start with Windows: $(-not $NoAutoStart)"
+Write-Output "Registered $appName from: $sourceDirectory"
+Write-Output "Start Menu shortcut: $startMenuShortcut"
+Write-Output "Start with Windows: $(-not $NoAutoStart)"

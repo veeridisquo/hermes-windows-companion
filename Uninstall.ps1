@@ -28,5 +28,5 @@ foreach ($terminalLauncher in $terminalLaunchers) {
     Remove-Item -LiteralPath $terminalLauncher.FullName -Force
 }
 
-Write-Host 'Hermes Companion shortcuts and terminal launcher scripts were removed and the source checkout was left unchanged.'
-Write-Host 'Hermes Agent and its gateway were not changed.'
+Write-Output 'Hermes Companion shortcuts and terminal launcher scripts were removed and the source checkout was left unchanged.'
+Write-Output 'Hermes Agent and its gateway were not changed.'

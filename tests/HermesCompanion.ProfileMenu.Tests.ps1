@@ -4,6 +4,7 @@ Describe 'Hermes Companion profile menu' {
         Add-Type -AssemblyName System.Drawing
 
         $scriptPath = Join-Path (Join-Path $PSScriptRoot '..') 'HermesCompanion.ps1'
+        $script:FixtureDirectory = Join-Path $PSScriptRoot 'fixtures'
         . $scriptPath -ParsersOnly
     }
 
@@ -37,21 +38,18 @@ Describe 'Hermes Companion profile menu' {
         $script:Profiles = @()
         $script:HermesPath = $null
         $script:ProfileRefreshPending = $true
+        $profileListOutput = Get-Content -LiteralPath (Join-Path $script:FixtureDirectory 'profile-list.txt') -Raw -Encoding UTF8
 
         Complete-ProfileRefresh ([pscustomobject]@{
             ExitCode = 0
-            Output = @'
- Profile          Model                        Gateway      Alias        Distribution
- ───────────────    ───────────────────────────    ───────────    ───────────    ────────────────────
- ◆default         gpt-5.6-terra                running      —            —
-  hebe            gpt-5.6-terra                stopped      hebe         hebe@0.1.0
-'@
+            Output = $profileListOutput
             Error = ''
         })
 
-        @($script:ProfilesMenu.DropDownItems).Count | Should -Be 2
+        @($script:ProfilesMenu.DropDownItems).Count | Should -Be 3
         $script:ProfilesMenu.DropDownItems[0].Text | Should -Be 'default (active, gateway running)'
-        $script:ProfilesMenu.DropDownItems[1].Text | Should -Be 'hebe (gateway checking)'
+        $script:ProfilesMenu.DropDownItems[1].Text | Should -Be 'long-profile-name (gateway checking)'
+        $script:ProfilesMenu.DropDownItems[2].Text | Should -Be 'personal (gateway checking)'
         $script:ProfileRefreshPending | Should -Be $false
     }
 

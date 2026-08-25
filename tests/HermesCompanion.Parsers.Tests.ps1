@@ -1,7 +1,7 @@
 Describe 'Hermes Companion CLI output parsers' {
     BeforeAll {
         $scriptPath = Join-Path (Join-Path $PSScriptRoot '..') 'HermesCompanion.ps1'
-        $fixtureDirectory = Join-Path $PSScriptRoot 'fixtures'
+        $script:FixtureDirectory = Join-Path $PSScriptRoot 'fixtures'
 
         . $scriptPath -ParsersOnly
     }
@@ -18,7 +18,7 @@ Describe 'Hermes Companion CLI output parsers' {
 
     Context 'profile list output' {
         It 'returns every profile, including long IDs and display-named profiles' {
-            $output = Get-Content -LiteralPath (Join-Path $fixtureDirectory 'profile-list.txt') -Raw -Encoding UTF8
+            $output = Get-Content -LiteralPath (Join-Path $script:FixtureDirectory 'profile-list.txt') -Raw -Encoding UTF8
             $profiles = @(Read-ProfileList $output)
 
             $profiles.Count | Should -Be 3
@@ -27,7 +27,7 @@ Describe 'Hermes Companion CLI output parsers' {
         }
 
         It 'uses the canonical ID rather than the display label' {
-            $output = Get-Content -LiteralPath (Join-Path $fixtureDirectory 'profile-list.txt') -Raw -Encoding UTF8
+            $output = Get-Content -LiteralPath (Join-Path $script:FixtureDirectory 'profile-list.txt') -Raw -Encoding UTF8
             $matched = @(Read-ProfileList $output | Where-Object { $_.Name -eq 'personal' })
 
             $matched.Count | Should -Be 1
@@ -35,7 +35,7 @@ Describe 'Hermes Companion CLI output parsers' {
         }
 
         It 'marks only the active profile and skips table decorations' {
-            $output = Get-Content -LiteralPath (Join-Path $fixtureDirectory 'profile-list.txt') -Raw -Encoding UTF8
+            $output = Get-Content -LiteralPath (Join-Path $script:FixtureDirectory 'profile-list.txt') -Raw -Encoding UTF8
             $profiles = @(Read-ProfileList $output)
             $active = @($profiles | Where-Object { $_.IsActive })
 
@@ -47,19 +47,19 @@ Describe 'Hermes Companion CLI output parsers' {
 
     Context 'gateway status output' {
         It 'recognises a registered Windows Scheduled Task' {
-            $output = Get-Content -LiteralPath (Join-Path $fixtureDirectory 'gateway-installed.txt') -Raw -Encoding UTF8
+            $output = Get-Content -LiteralPath (Join-Path $script:FixtureDirectory 'gateway-installed.txt') -Raw -Encoding UTF8
 
             Get-ProfileGatewayInstalledState $output | Should -Be $true
         }
 
         It 'reports no installation when Hermes reports no gateway service' {
-            $output = Get-Content -LiteralPath (Join-Path $fixtureDirectory 'gateway-not-installed.txt') -Raw -Encoding UTF8
+            $output = Get-Content -LiteralPath (Join-Path $script:FixtureDirectory 'gateway-not-installed.txt') -Raw -Encoding UTF8
 
             Get-ProfileGatewayInstalledState $output | Should -Be $false
         }
 
         It 'reports no installation when a gateway is running manually' {
-            $output = Get-Content -LiteralPath (Join-Path $fixtureDirectory 'gateway-manual.txt') -Raw -Encoding UTF8
+            $output = Get-Content -LiteralPath (Join-Path $script:FixtureDirectory 'gateway-manual.txt') -Raw -Encoding UTF8
 
             Get-ProfileGatewayInstalledState $output | Should -Be $false
         }
@@ -67,7 +67,7 @@ Describe 'Hermes Companion CLI output parsers' {
 
     Context 'version output' {
         It 'extracts version and installation details from the basic banner' {
-            $output = Get-Content -LiteralPath (Join-Path $fixtureDirectory 'version-up-to-date.txt') -Raw -Encoding UTF8
+            $output = Get-Content -LiteralPath (Join-Path $script:FixtureDirectory 'version-up-to-date.txt') -Raw -Encoding UTF8
 
             Read-VersionOutput $output
 
@@ -77,7 +77,7 @@ Describe 'Hermes Companion CLI output parsers' {
         }
 
         It 'extracts version and installation details from the upstream banner' {
-            $output = Get-Content -LiteralPath (Join-Path $fixtureDirectory 'version-update-available.txt') -Raw -Encoding UTF8
+            $output = Get-Content -LiteralPath (Join-Path $script:FixtureDirectory 'version-update-available.txt') -Raw -Encoding UTF8
 
             Read-VersionOutput $output
 
@@ -89,14 +89,14 @@ Describe 'Hermes Companion CLI output parsers' {
 
     Context 'update output' {
         It 'reports zero commits behind when Hermes is up to date' {
-            $output = Get-Content -LiteralPath (Join-Path $fixtureDirectory 'update-check-up-to-date.txt') -Raw -Encoding UTF8
+            $output = Get-Content -LiteralPath (Join-Path $script:FixtureDirectory 'update-check-up-to-date.txt') -Raw -Encoding UTF8
 
             Read-UpdateStatus $output | Should -Be $true
             $script:UpdateBehind | Should -Be 0
         }
 
         It 'reports an unspecified available update and its command' {
-            $output = Get-Content -LiteralPath (Join-Path $fixtureDirectory 'version-update-available.txt') -Raw -Encoding UTF8
+            $output = Get-Content -LiteralPath (Join-Path $script:FixtureDirectory 'version-update-available.txt') -Raw -Encoding UTF8
 
             Read-UpdateStatus $output | Should -Be $true
             $script:UpdateBehind | Should -Be -1
@@ -104,7 +104,7 @@ Describe 'Hermes Companion CLI output parsers' {
         }
 
         It 'reports the commit distance and recommended command' {
-            $output = Get-Content -LiteralPath (Join-Path $fixtureDirectory 'update-check-available.txt') -Raw -Encoding UTF8
+            $output = Get-Content -LiteralPath (Join-Path $script:FixtureDirectory 'update-check-available.txt') -Raw -Encoding UTF8
 
             Read-UpdateStatus $output | Should -Be $true
             $script:UpdateBehind | Should -Be 3

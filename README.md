@@ -106,7 +106,7 @@ The tray icon comes from the official [NousResearch/hermes-agent](https://github
 
 ## Development
 
-Run the parser suite with Windows PowerShell 5.1:
+Run the test suite with Windows PowerShell 5.1:
 
 ```powershell
 Invoke-Pester -Path .\tests
