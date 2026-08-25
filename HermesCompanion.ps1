@@ -441,7 +441,105 @@ function Stop-VerifiedDashboardListener {
     return -not (Test-DashboardEndpoint)
 }
 
+function Test-ExternalHermesUpdateInProgress {
+    # LogsPath already resolves HERMES_HOME (or its LOCALAPPDATA default).
+    # The shared update marker is a sibling of that logs directory.
+    if (-not $script:LogsPath) {
+        return $false
+    }
+
+    $markerPath = Join-Path (Split-Path -Path $script:LogsPath -Parent) '.hermes-update-in-progress'
+    if (-not (Test-Path -LiteralPath $markerPath -PathType Leaf)) {
+        return $false
+    }
+
+    try {
+        $markerLines = @(Get-Content -LiteralPath $markerPath -ErrorAction Stop)
+        if ($markerLines.Count -lt 2) {
+            return $false
+        }
+
+        [int]$ownerProcessId = 0
+        [long]$startedAtUnix = 0
+        if (-not [int]::TryParse($markerLines[0].Trim(), [ref]$ownerProcessId) -or $ownerProcessId -le 0) {
+            return $false
+        }
+        if (-not [long]::TryParse($markerLines[1].Trim(), [ref]$startedAtUnix)) {
+            return $false
+        }
+
+        $startedAt = [DateTime]::new(1970, 1, 1, 0, 0, 0, [DateTimeKind]::Utc).AddSeconds($startedAtUnix)
+        $age = [DateTime]::UtcNow - $startedAt
+        if ($age.TotalSeconds -lt 0 -or $age.TotalMinutes -ge 20) {
+            return $false
+        }
+
+        $ownerProcess = Get-Process -Id $ownerProcessId -ErrorAction Stop
+        return -not $ownerProcess.HasExited
+    }
+    catch {
+        # An unreadable, malformed, or stale marker must never lock the tray app.
+        return $false
+    }
+}
+
+function Sync-ExternalHermesUpdateState {
+    # The companion's own update has an operation to monitor. Any other live
+    # marker owns the shared updater lock, so do not launch a Hermes command.
+    if ($script:UpdateOperation) {
+        return $false
+    }
+
+    $externalUpdateRunning = Test-ExternalHermesUpdateInProgress
+    if ($externalUpdateRunning) {
+        $script:RefreshPending = $true
+        if (-not $script:UpdateInProgress) {
+            $script:UpdateInProgress = $true
+            $script:UpdateStatusText = 'Another Hermes updater is running.'
+            Update-TrayDisplay
+        }
+        return $true
+    }
+
+    if ($script:UpdateInProgress) {
+        $script:UpdateInProgress = $false
+        $script:UpdateStatusText = $null
+        $script:RefreshPending = $true
+        Update-TrayDisplay
+    }
+
+    return $false
+}
+
+function Set-StatusRefreshInterval {
+    param([switch]$Reset)
+
+    $baseIntervalMilliseconds = 60000
+    $maximumIntervalMilliseconds = 300000
+
+    if ($Reset -or -not (Get-Variable -Scope Script -Name StatusRefreshIntervalMilliseconds -ErrorAction SilentlyContinue)) {
+        $script:StatusRefreshIntervalMilliseconds = $baseIntervalMilliseconds
+    }
+    else {
+        $script:StatusRefreshIntervalMilliseconds = [Math]::Min(
+            $script:StatusRefreshIntervalMilliseconds * 2,
+            $maximumIntervalMilliseconds
+        )
+    }
+
+    $refreshTimerVariable = Get-Variable -Scope Script -Name RefreshTimer -ErrorAction SilentlyContinue
+    if ($refreshTimerVariable) {
+        $script:RefreshTimer.Interval = $script:StatusRefreshIntervalMilliseconds
+    }
+}
+
 function Request-StatusRefresh {
+    param([switch]$Scheduled)
+
+    if (Sync-ExternalHermesUpdateState) {
+        return
+    }
+
     if ($script:UpdateInProgress) {
         return
     }
@@ -451,7 +549,11 @@ function Request-StatusRefresh {
         return
     }
 
+    $previousLastError = $script:LastError
     $script:RefreshPending = $false
+    if (-not $Scheduled) {
+        Set-StatusRefreshInterval -Reset
+    }
     $script:HermesPath = Find-HermesExecutable
     $script:LastError = $null
 
@@ -463,6 +565,9 @@ function Request-StatusRefresh {
         return
     }
 
+    $previousGatewayRunning = $script:GatewayRunning
+    $previousDashboardRunning = $script:DashboardRunning
+    $previousDashboardPort = $script:DashboardPort
     $started = Start-HermesOperation -Arguments @('gateway', 'list') -QuietWhenBusy -OnComplete {
         param($gatewayResult)
 
@@ -470,6 +575,10 @@ function Request-StatusRefresh {
         $script:GatewayRunning = $gatewayResult.ExitCode -eq 0 -and $gatewayText -match '(?i)PID\s*\d+|process running|gateway running'
         if ($gatewayResult.ExitCode -ne 0) {
             $script:LastError = if ($gatewayResult.Error) { $gatewayResult.Error } else { 'Gateway status failed.' }
+        }
+
+        if (Sync-ExternalHermesUpdateState) {
+            return
         }
 
         Start-HermesOperation -Arguments @('dashboard', '--status') -QuietWhenBusy -OnComplete {
@@ -495,11 +604,19 @@ function Request-StatusRefresh {
             if ($dashboardResult.ExitCode -ne 0 -and -not $script:LastError) {
                 $script:LastError = if ($dashboardResult.Error) { $dashboardResult.Error } else { 'Dashboard status failed.' }
             }
+            $statusChanged = $previousGatewayRunning -ne $script:GatewayRunning -or
+                $previousDashboardRunning -ne $script:DashboardRunning -or
+                $previousDashboardPort -ne $script:DashboardPort -or
+                $previousLastError -ne $script:LastError
+            Set-StatusRefreshInterval -Reset:($statusChanged -or -not $Scheduled)
             Update-TrayDisplay
-        } | Out-Null
-    }
+        }.GetNewClosure() | Out-Null
+    }.GetNewClosure()
 
     if (-not $started) {
+        if ($Scheduled) {
+            Set-StatusRefreshInterval
+        }
         Update-TrayDisplay
     }
 }
@@ -2041,6 +2158,9 @@ $pollTimer.add_Tick({
     Update-UpdateProgress
     Complete-UpdateOperation
     Complete-ActiveOperation
+    if (Sync-ExternalHermesUpdateState) {
+        return
+    }
     if ($script:ActiveOperation -or $script:UpdateInProgress) {
         return
     }
@@ -2053,13 +2173,13 @@ $pollTimer.add_Tick({
     elseif ($script:ProfileRefreshPending) {
         Request-ProfileRefresh
     }
-})
+}.GetNewClosure())
 $pollTimer.Start()
 
-$refreshTimer = New-Object System.Windows.Forms.Timer
-$refreshTimer.Interval = 10000
-$refreshTimer.add_Tick({ Request-StatusRefresh })
-$refreshTimer.Start()
+$script:RefreshTimer = New-Object System.Windows.Forms.Timer
+$script:RefreshTimer.Interval = 60000
+$script:RefreshTimer.add_Tick({ Request-StatusRefresh -Scheduled }.GetNewClosure())
+$script:RefreshTimer.Start()
 
 $applicationContext = New-Object System.Windows.Forms.ApplicationContext
 $exitItem.add_Click({ $applicationContext.ExitThread() })
@@ -2070,7 +2190,7 @@ try {
 }
 finally {
     $pollTimer.Stop()
-    $refreshTimer.Stop()
+    $script:RefreshTimer.Stop()
     if ($script:ActiveOperation -and -not $script:ActiveOperation.Process.HasExited) {
         try { $script:ActiveOperation.Process.Kill() } catch { Write-Verbose 'The active Hermes process was already gone during shutdown.' }
         $script:ActiveOperation.Process.Dispose()
