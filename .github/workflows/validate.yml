@@ -51,10 +51,18 @@ jobs:
         shell: powershell
         run: |
           # Pester makes BeforeAll variables visible to Its at runtime, but PSUseDeclaredVarsMoreThanAssignments is lexical.
-          $scriptPaths = @(Get-ChildItem -Path $PWD -Filter '*.ps1' -File -Recurse | Where-Object {
+          $paths = @(Get-ChildItem -Path $PWD -Filter '*.ps1' -File -Recurse | Where-Object {
               $_.FullName -notlike "$($PWD)\tests\*"
-          } | ForEach-Object { $_.FullName })
-          $findings = @(Invoke-ScriptAnalyzer -Path $scriptPaths -Settings .\PSScriptAnalyzerSettings.psd1)
+          })
+          Write-Host "Analyzing $($paths.Count) PowerShell script(s)."
+          if ($paths.Count -eq 0) {
+              throw 'No PowerShell scripts found to analyze.'
+          }
+
+          $findings = @()
+          foreach ($path in $paths) {
+              $findings += @(Invoke-ScriptAnalyzer -Path $path.FullName -Settings (Join-Path $PWD 'PSScriptAnalyzerSettings.psd1'))
+          }
 
           foreach ($finding in $findings) {
               Write-Host "$($finding.ScriptName):$($finding.Line):$($finding.Column) [$($finding.Severity)] $($finding.RuleName): $($finding.Message)"
