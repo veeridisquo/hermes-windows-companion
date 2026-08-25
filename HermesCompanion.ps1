@@ -330,12 +330,12 @@ function Set-HermesMenuEnabled {
 
     $script:OpenDashboardItem.Enabled = $Enabled
     $script:DesktopItem.Enabled = $Enabled
-    $script:StartDashboardItem.Enabled = $Enabled
-    $script:StopDashboardItem.Enabled = $Enabled
+    $script:StartDashboardItem.Enabled = $Enabled -and -not $script:DashboardRunning
+    $script:StopDashboardItem.Enabled = $Enabled -and $script:DashboardRunning
     $script:GatewayStatusItem.Enabled = $Enabled
-    $script:GatewayStartItem.Enabled = $Enabled
-    $script:GatewayStopItem.Enabled = $Enabled
-    $script:GatewayRestartItem.Enabled = $Enabled
+    $script:GatewayStartItem.Enabled = $Enabled -and -not $script:GatewayRunning
+    $script:GatewayStopItem.Enabled = $Enabled -and $script:GatewayRunning
+    $script:GatewayRestartItem.Enabled = $Enabled -and $script:GatewayRunning
     $script:CheckUpdateItem.Enabled = $Enabled
     $script:UpdateHermesItem.Enabled = $Enabled
     $script:UpdateLogItem.Enabled = $Enabled
@@ -368,8 +368,12 @@ function Update-TrayDisplay {
 
     if (-not $script:HermesPath -or $script:LastError) {
         $script:TrayIcon.Icon = $script:MutedIcon
-        $script:TrayIcon.Text = 'Hermes Companion - unavailable'
-        $script:GatewaySummaryItem.Text = 'Gateway: unavailable'
+        $unavailableReason = if ($script:LastError) { ($script:LastError -replace '\s+', ' ').Trim() } else { 'Hermes was not found on PATH.' }
+        if ($unavailableReason.Length -gt 80) { $unavailableReason = $unavailableReason.Substring(0, 77) + '...' }
+        $tooltip = "Hermes unavailable: $unavailableReason"
+        if ($tooltip.Length -gt 63) { $tooltip = $tooltip.Substring(0, 60) + '...' }
+        $script:TrayIcon.Text = $tooltip
+        $script:GatewaySummaryItem.Text = "Hermes unavailable: $unavailableReason"
         $script:DashboardSummaryItem.Text = 'Dashboard: unknown'
         Set-HermesMenuEnabled $false
         return
@@ -393,11 +397,6 @@ function Update-TrayDisplay {
     $script:GatewaySummaryItem.Text = "Gateway: $gatewayText"
     $script:DashboardSummaryItem.Text = "Dashboard: $dashboardText"
     Set-HermesMenuEnabled $true
-    $script:StartDashboardItem.Enabled = -not $script:DashboardRunning
-    $script:StopDashboardItem.Enabled = $script:DashboardRunning
-    $script:GatewayStartItem.Enabled = -not $script:GatewayRunning
-    $script:GatewayStopItem.Enabled = $script:GatewayRunning
-    $script:GatewayRestartItem.Enabled = $script:GatewayRunning
 }
 
 function Test-DashboardEndpoint {
@@ -553,6 +552,7 @@ function Request-StatusRefresh {
     $script:RefreshPending = $false
     if (-not $Scheduled) {
         Set-StatusRefreshInterval -Reset
+        $script:VersionCheckPending = $true
     }
     $script:HermesPath = Find-HermesExecutable
     $script:LastError = $null
@@ -572,7 +572,20 @@ function Request-StatusRefresh {
         param($gatewayResult)
 
         $gatewayText = "$($gatewayResult.Output)`n$($gatewayResult.Error)"
-        $script:GatewayRunning = $gatewayResult.ExitCode -eq 0 -and $gatewayText -match '(?i)PID\s*\d+|process running|gateway running'
+        # 'gateway list' has one row per profile. The current marker identifies
+        # the profile that unqualified gateway actions control; a running row
+        # does not always include a PID when its pid file cannot be read.
+        $activeGatewayLine = $null
+        foreach ($gatewayLine in ($gatewayText -split "`r?`n")) {
+            if ($gatewayLine -match '\(current\)') {
+                $activeGatewayLine = $gatewayLine
+                break
+            }
+        }
+        $script:GatewayRunning = $false
+        if ($gatewayResult.ExitCode -eq 0 -and $activeGatewayLine) {
+            $script:GatewayRunning = $activeGatewayLine -notmatch '(?i)\bnot running\b'
+        }
         if ($gatewayResult.ExitCode -ne 0) {
             $script:LastError = if ($gatewayResult.Error) { $gatewayResult.Error } else { 'Gateway status failed.' }
         }
@@ -814,13 +827,14 @@ function Request-VersionCheck {
 
         $script:VersionCheckPending = $false
         Read-VersionOutput "$($result.Output)`n$($result.Error)"
-        Update-TrayDisplay
 
         if ($result.ExitCode -ne 0 -or -not $script:HermesVersion) {
-            $script:LastError = 'Hermes did not report its version.'
+            $script:LastError = if ($result.Error) { $result.Error } elseif ($result.Output) { $result.Output } else { 'Hermes did not report its version.' }
             Update-TrayDisplay
             return
         }
+
+        Update-TrayDisplay
 
         if (Test-UpdateAvailable) {
             if (-not $script:UpdateNotified) {
