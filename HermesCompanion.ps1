@@ -339,16 +339,12 @@ function Update-TrayDisplay {
     $dashboardText = if ($script:DashboardRunning) { 'running' } else { 'stopped' }
     $script:GatewaySummaryItem.Text = "Gateway: $gatewayText"
     $script:DashboardSummaryItem.Text = "Dashboard: $dashboardText"
-    $script:OpenDashboardItem.Enabled = $true
-    $script:DesktopItem.Enabled = $true
+    Set-HermesMenuEnabled $true
     $script:StartDashboardItem.Enabled = -not $script:DashboardRunning
     $script:StopDashboardItem.Enabled = $script:DashboardRunning
-    $script:GatewayStatusItem.Enabled = $true
     $script:GatewayStartItem.Enabled = -not $script:GatewayRunning
     $script:GatewayStopItem.Enabled = $script:GatewayRunning
     $script:GatewayRestartItem.Enabled = $script:GatewayRunning
-    $script:CheckUpdateItem.Enabled = $true
-    $script:UpdateHermesItem.Enabled = $true
 }
 
 function Test-DashboardEndpoint {
@@ -735,6 +731,7 @@ function Read-ProfileList {
             Name = $name
             Model = if ($fields.Count -ge 2) { $fields[1].Trim() } else { '' }
             GatewayRunning = ($gateway -match '(?i)^running')
+            GatewayInstalled = $null
             Alias = $alias
             IsActive = $isActive
         }
@@ -756,12 +753,63 @@ function Request-ProfileRefresh {
             $script:Profiles = Read-ProfileList "$($result.Output)`n$($result.Error)"
         }
         Update-ProfileMenu
+        Request-ProfileGatewayInstallationRefresh
     }
 
     if ($started) {
         $script:ProfileRefreshPending = $false
     }
     else {
+        $script:ProfileRefreshPending = $true
+    }
+}
+
+function Get-ProfileGatewayInstalledState {
+    <#
+        A stopped gateway is not necessarily ready to start. On Windows Hermes
+        creates either a Scheduled Task or a Startup-folder item before it can
+        run a profile gateway in the background. Its status command is the
+        authoritative source for that distinction.
+    #>
+    param([string]$Text)
+
+    $clean = Remove-AnsiEscape $Text
+    if ($clean -match '(?i)Scheduled Task registered|Windows login item installed|Gateway service (?:is )?installed') {
+        return $true
+    }
+    if ($clean -match '(?is)\b(?:To install|To start):.*?\bgateway install\b|Gateway service is not installed') {
+        return $false
+    }
+
+    return $null
+}
+
+function Request-ProfileGatewayInstallationRefresh {
+    param([int]$Index = 0)
+
+    $profiles = @($script:Profiles)
+    if ($script:UpdateInProgress -or -not $script:HermesPath -or $Index -ge $profiles.Count) {
+        return
+    }
+
+    $hermesProfile = $profiles[$Index]
+    $onComplete = {
+        param($result)
+
+        if ($result.ExitCode -eq 0) {
+            $hermesProfile.GatewayInstalled = Get-ProfileGatewayInstalledState "$($result.Output)`n$($result.Error)"
+        }
+        else {
+            $hermesProfile.GatewayInstalled = $null
+        }
+
+        Update-ProfileMenu
+        Request-ProfileGatewayInstallationRefresh -Index ($Index + 1)
+    }.GetNewClosure()
+    $started = Start-HermesOperation -Arguments @('-p', $hermesProfile.Name, 'gateway', 'status') -QuietWhenBusy -OnComplete $onComplete
+
+    if (-not $started) {
+        # A refresh will retry after the command already in flight completes.
         $script:ProfileRefreshPending = $true
     }
 }
@@ -790,31 +838,33 @@ function Get-TerminalLaunch {
     }
 }
 
-function Open-ProfileTerminal {
+function Open-HermesTerminal {
     <#
         Windows Terminal is an app execution alias: it hands the request to the
         Windows Terminal process, which starts the shell from its own
         environment rather than the companion's. Run the Hermes executable by
         its resolved path so the launched terminal does not depend on PATH.
     #>
-    param([string]$Name)
+    param(
+        [string]$Title,
+        [string]$ScriptName,
+        [string[]]$Arguments
+    )
 
     if (-not $script:HermesPath) {
         Show-CompanionError 'Hermes was not found on PATH.'
         return
     }
 
-    $title = "Hermes - $Name"
-
     $lines = @(
         '@echo off',
         "title $title",
-        ('call "' + $script:HermesPath + '" -p ' + $Name)
+        ('call "' + $script:HermesPath + '" ' + (($Arguments | ForEach-Object { ConvertTo-NativeArgument $_ }) -join ' '))
     )
 
-    # One script per profile, rewritten on each launch, so these do not pile
-    # up in the temp directory.
-    $scriptPath = Join-Path $env:TEMP "HermesCompanion-$Name.cmd"
+    # One script per action/profile, rewritten on each launch, so these do not
+    # pile up in the temp directory or replace a terminal that is still open.
+    $scriptPath = Join-Path $env:TEMP "HermesCompanion-$ScriptName.cmd"
     try {
         Set-Content -LiteralPath $scriptPath -Value $lines -Encoding Ascii -ErrorAction Stop
     }
@@ -828,8 +878,34 @@ function Open-ProfileTerminal {
         Start-Process -FilePath $launch.FilePath -ArgumentList $launch.Arguments -ErrorAction Stop
     }
     catch {
-        Show-CompanionError "Could not open a terminal for profile '$Name'.`n`n$($_.Exception.Message)"
+        Show-CompanionError "Could not open a Hermes terminal.`n`n$($_.Exception.Message)"
     }
+}
+
+function Open-ProfileTerminal {
+    param([string]$Name)
+
+    Open-HermesTerminal -Title "Hermes - $Name" -ScriptName "$Name-session" -Arguments @('-p', $Name)
+}
+
+function Install-ProfileGateway {
+    param([string]$Name)
+
+    $choice = [System.Windows.Forms.MessageBox]::Show(
+        "Install a Windows background gateway for profile '$Name'?`n`nHermes will create a per-profile Windows startup entry. It can then start this profile's gateway without an open terminal.",
+        'Install profile gateway',
+        [System.Windows.Forms.MessageBoxButtons]::YesNo,
+        [System.Windows.Forms.MessageBoxIcon]::Question
+    )
+    if ($choice -ne [System.Windows.Forms.DialogResult]::Yes) {
+        return
+    }
+
+    # Hermes may need user input or a Windows UAC approval to create its task.
+    # Use a real terminal for that installer; a hidden command would leave its
+    # prompt unanswered and make the companion appear stuck.
+    Open-HermesTerminal -Title "Install Hermes gateway - $Name" -ScriptName "$Name-gateway-install" -Arguments @('-p', $Name, 'gateway', 'install')
+    Show-Notification 'Complete gateway installation' "Finish the Hermes prompts for profile $Name, then choose Refresh status."
 }
 
 function Show-ProfileDetails {
@@ -906,7 +982,19 @@ function Update-ProfileMenu {
         $name = $hermesProfile.Name
         $labels = @()
         if ($hermesProfile.IsActive) { $labels += 'active' }
-        $labels += if ($hermesProfile.GatewayRunning) { 'gateway running' } else { 'gateway stopped' }
+        $gatewayState = if ($hermesProfile.GatewayRunning) {
+            'gateway running'
+        }
+        elseif ($hermesProfile.GatewayInstalled -eq $true) {
+            'gateway stopped'
+        }
+        elseif ($hermesProfile.GatewayInstalled -eq $false) {
+            'gateway not installed'
+        }
+        else {
+            'gateway checking'
+        }
+        $labels += $gatewayState
         $item = New-Object System.Windows.Forms.ToolStripMenuItem ("$name ($($labels -join ', '))")
 
         $terminalItem = New-Object System.Windows.Forms.ToolStripMenuItem 'Open Hermes in terminal'
@@ -924,7 +1012,7 @@ function Update-ProfileMenu {
         $item.DropDownItems.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
 
         $startItem = New-Object System.Windows.Forms.ToolStripMenuItem 'Start gateway'
-        $startItem.Enabled = -not $hermesProfile.GatewayRunning
+        $startItem.Enabled = $hermesProfile.GatewayInstalled -eq $true -and -not $hermesProfile.GatewayRunning
         $startItem.add_Click({ Invoke-ProfileGatewayAction -Name $name -Action 'start' }.GetNewClosure())
         $item.DropDownItems.Add($startItem) | Out-Null
 
@@ -932,6 +1020,13 @@ function Update-ProfileMenu {
         $stopItem.Enabled = $hermesProfile.GatewayRunning
         $stopItem.add_Click({ Invoke-ProfileGatewayAction -Name $name -Action 'stop' }.GetNewClosure())
         $item.DropDownItems.Add($stopItem) | Out-Null
+
+        if ($hermesProfile.GatewayInstalled -eq $false) {
+            $item.DropDownItems.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
+            $installItem = New-Object System.Windows.Forms.ToolStripMenuItem 'Install gateway...'
+            $installItem.add_Click({ Install-ProfileGateway -Name $name }.GetNewClosure())
+            $item.DropDownItems.Add($installItem) | Out-Null
+        }
 
         $script:ProfilesMenu.DropDownItems.Add($item) | Out-Null
     }
