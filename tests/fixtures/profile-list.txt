@@ -1,0 +1,6 @@
+
+ Profile          Model                        Gateway      Alias        Distribution
+ ─────────────────────────────────────────────────────────────────────────────
+ ◆default         gpt-4.1-mini                 running      —            local
+  long-profile-name gpt-4.1-mini                 stopped      —            local
+  Personal Label (personal) gpt-4.1-mini                 stopped      work         remote

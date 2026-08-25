@@ -104,6 +104,14 @@ The tray icon comes from the official [NousResearch/hermes-agent](https://github
 - Hermes Companion never passes `--force` or `--force-venv`. Those skip the guards that keep a failed update from corrupting the install.
 - Only a git installation can be updated in place. For a Docker, Nix, or Termux install, Hermes Companion shows the update command Hermes recommends instead of running one.
 
+## Development
+
+Run the parser suite with Windows PowerShell 5.1:
+
+```powershell
+Invoke-Pester -Path .\tests
+```
+
 ## Contributing
 
 Bug reports and focused pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md).

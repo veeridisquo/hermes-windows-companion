@@ -1,0 +1,2 @@
+⚕ Update available: 3 commits behind origin/main.
+  Run 'hermes update' to install.
