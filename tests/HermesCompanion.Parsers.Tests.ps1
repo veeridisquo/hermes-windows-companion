@@ -1,8 +1,8 @@
-$scriptPath = Join-Path (Join-Path $PSScriptRoot '..') 'HermesCompanion.ps1'
-$fixtureDirectory = Join-Path $PSScriptRoot 'fixtures'
-
 Describe 'Hermes Companion CLI output parsers' {
     BeforeAll {
+        $scriptPath = Join-Path (Join-Path $PSScriptRoot '..') 'HermesCompanion.ps1'
+        $fixtureDirectory = Join-Path $PSScriptRoot 'fixtures'
+
         . $scriptPath -ParsersOnly
     }
 
@@ -28,10 +28,10 @@ Describe 'Hermes Companion CLI output parsers' {
 
         It 'uses the canonical ID rather than the display label' {
             $output = Get-Content -LiteralPath (Join-Path $fixtureDirectory 'profile-list.txt') -Raw -Encoding UTF8
-            $profile = @(Read-ProfileList $output | Where-Object { $_.Name -eq 'personal' })
+            $matched = @(Read-ProfileList $output | Where-Object { $_.Name -eq 'personal' })
 
-            $profile.Count | Should -Be 1
-            $profile[0].Name | Should -Be 'personal'
+            $matched.Count | Should -Be 1
+            $matched[0].Name | Should -Be 'personal'
         }
 
         It 'marks only the active profile and skips table decorations' {
