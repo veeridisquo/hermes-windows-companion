@@ -142,6 +142,13 @@ function Start-HermesOperation {
         [switch]$QuietWhenBusy
     )
 
+    if ($script:UpdateInProgress) {
+        if (-not $QuietWhenBusy) {
+            Show-Notification 'Hermes update in progress' 'Wait for the update to finish before running another command.'
+        }
+        return $false
+    }
+
     if ($script:ActiveOperation) {
         if (-not $QuietWhenBusy) {
             Show-Notification 'Hermes is already handling another request.' 'Please wait a moment and try again.'
@@ -149,13 +156,36 @@ function Start-HermesOperation {
         return $false
     }
 
+    $process = $null
     try {
         $info = New-HermesProcessStartInfo -Arguments $Arguments -RedirectOutput
         $process = New-Object System.Diagnostics.Process
         $process.StartInfo = $info
+        $outputBuilder = New-Object System.Text.StringBuilder
+        $errorBuilder = New-Object System.Text.StringBuilder
+        # Process events drain each pipe as data arrives, so a chatty Hermes
+        # failure cannot block on a full pipe before it exits.
+        $outputDataReceived = {
+            param($sender, $eventArgs)
+
+            if ($eventArgs.Data -ne $null) {
+                [void]$outputBuilder.AppendLine($eventArgs.Data)
+            }
+        }.GetNewClosure()
+        $errorDataReceived = {
+            param($sender, $eventArgs)
+
+            if ($eventArgs.Data -ne $null) {
+                [void]$errorBuilder.AppendLine($eventArgs.Data)
+            }
+        }.GetNewClosure()
+        $process.add_OutputDataReceived($outputDataReceived)
+        $process.add_ErrorDataReceived($errorDataReceived)
         if (-not $process.Start()) {
             throw 'The Hermes process did not start.'
         }
+        $process.BeginOutputReadLine()
+        $process.BeginErrorReadLine()
 
         $script:ActiveOperation = [pscustomobject]@{
             Process = $process
@@ -163,10 +193,28 @@ function Start-HermesOperation {
             OnComplete = $OnComplete
             StartedAt = [DateTime]::UtcNow
             TimeoutSeconds = $TimeoutSeconds
+            OutputBuilder = $outputBuilder
+            ErrorBuilder = $errorBuilder
+            OutputDataReceived = $outputDataReceived
+            ErrorDataReceived = $errorDataReceived
         }
         return $true
     }
     catch {
+        if ($process) {
+            # A reader setup failure leaves no operation to manage a process
+            # that may have started, so stop it before releasing the handle.
+            try {
+                if (-not $process.HasExited) {
+                    $process.Kill()
+                    $process.WaitForExit()
+                }
+            }
+            catch {
+                Write-Verbose 'The Hermes process could not be stopped after startup failed.'
+            }
+            $process.Dispose()
+        }
         $script:LastError = $_.Exception.Message
         Update-TrayDisplay
         if (-not $QuietWhenBusy) {
@@ -188,7 +236,8 @@ function Complete-ActiveOperation {
     }
 
     if ($timedOut -and -not $operation.Process.HasExited) {
-        try { $operation.Process.Kill() } catch {}
+        try { $operation.Process.Kill() } catch { Write-Verbose 'The timed out Hermes process was already gone.' }
+        $operation.Process.WaitForExit()
         $result = [pscustomobject]@{
             ExitCode = -1
             Output = ''
@@ -196,15 +245,18 @@ function Complete-ActiveOperation {
         }
     }
     else {
-        $output = $operation.Process.StandardOutput.ReadToEnd()
-        $errorOutput = $operation.Process.StandardError.ReadToEnd()
+        # Wait once more after exit so the asynchronous readers receive their
+        # final lines before their builders are converted to result strings.
+        $operation.Process.WaitForExit()
         $result = [pscustomobject]@{
             ExitCode = $operation.Process.ExitCode
-            Output = $output.Trim()
-            Error = $errorOutput.Trim()
+            Output = $operation.OutputBuilder.ToString().Trim()
+            Error = $operation.ErrorBuilder.ToString().Trim()
         }
     }
 
+    $operation.Process.remove_OutputDataReceived($operation.OutputDataReceived)
+    $operation.Process.remove_ErrorDataReceived($operation.ErrorDataReceived)
     $operation.Process.Dispose()
     $script:ActiveOperation = $null
 
@@ -436,7 +488,7 @@ function Request-StatusRefresh {
 function Invoke-GatewayAction {
     param([ValidateSet('start', 'stop', 'restart')][string]$Action)
 
-    Start-HermesOperation -Arguments @('gateway', $Action) -OnComplete {
+    $onComplete = {
         param($result)
 
         if ($result.ExitCode -eq 0) {
@@ -447,7 +499,8 @@ function Invoke-GatewayAction {
             Show-CompanionError "Gateway command failed.`n`n$message"
         }
         Request-StatusRefresh
-    } | Out-Null
+    }.GetNewClosure()
+    Start-HermesOperation -Arguments @('gateway', $Action) -OnComplete $onComplete | Out-Null
 }
 
 function Show-GatewayStatus {
@@ -952,7 +1005,7 @@ function Invoke-ProfileGatewayAction {
         [ValidateSet('start', 'stop', 'restart')][string]$Action
     )
 
-    Start-HermesOperation -Arguments @('-p', $Name, 'gateway', $Action) -OnComplete {
+    $onComplete = {
         param($result)
 
         if ($result.ExitCode -eq 0) {
@@ -964,7 +1017,8 @@ function Invoke-ProfileGatewayAction {
         }
         $script:ProfileRefreshPending = $true
         Request-StatusRefresh
-    } | Out-Null
+    }.GetNewClosure()
+    Start-HermesOperation -Arguments @('-p', $Name, 'gateway', $Action) -OnComplete $onComplete | Out-Null
 }
 
 function Update-ProfileMenu {
@@ -1250,7 +1304,7 @@ function Start-HermesUpdate {
     if (-not (Wait-ActiveOperationDrained)) {
         $script:UpdateInProgress = $false
         $script:RestartDashboardAfterUpdate = $false
-        Show-CompanionError 'The update was cancelled because a Hermes status command did not finish. Try again in a moment.'
+        Show-CompanionError 'The update was cancelled because the active Hermes command did not finish before the eight-second drain period. Try again in a moment.'
         Update-TrayDisplay
         return
     }
@@ -1815,12 +1869,12 @@ finally {
     $pollTimer.Stop()
     $refreshTimer.Stop()
     if ($script:ActiveOperation -and -not $script:ActiveOperation.Process.HasExited) {
-        try { $script:ActiveOperation.Process.Kill() } catch {}
+        try { $script:ActiveOperation.Process.Kill() } catch { Write-Verbose 'The active Hermes process was already gone during shutdown.' }
         $script:ActiveOperation.Process.Dispose()
     }
     if ($script:UpdateOperation) {
         # Killing a running update would strand a half-installed Hermes.
-        try { $script:UpdateOperation.Process.Dispose() } catch {}
+        try { $script:UpdateOperation.Process.Dispose() } catch { Write-Verbose 'The update process had already released its resources during shutdown.' }
     }
     $script:TrayIcon.Visible = $false
     $script:TrayIcon.Dispose()
