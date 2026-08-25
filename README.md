@@ -57,7 +57,7 @@ Right-click the Hermes icon in the Windows notification area. Windows may initia
 - **Hermes profiles** lists every profile with its gateway state and marks the active one.
 - Double-click: open or start the Hermes dashboard.
 
-Each profile has a submenu to open Hermes in a terminal with that profile, view its details, open its folder, and control its gateway. A profile without a Windows background gateway shows **Install gateway...** instead of allowing Start. The installer opens in a terminal because Hermes may ask for confirmation or Windows may ask for administrator approval. Terminals open in Windows Terminal when it is installed, and in a console window otherwise.
+Each profile has a submenu to open Hermes in a terminal with that profile, view its details, open its folder, and control its gateway. When a profile gateway is stopped and has no Windows background gateway, **Install gateway...** appears and Start is disabled. A manually running gateway with no Windows background gateway shows as running, allows Stop, and also offers **Install gateway...**. The installer opens in a terminal because Hermes may ask for confirmation or Windows may ask for administrator approval. Terminals open in Windows Terminal when it is installed, and in a console window otherwise.
 
 **Check for updates** runs `hermes update --check`, the documented way to ask whether an update is available. It always contacts the upstream repository, so the answer is never a cached one. **Update Hermes...** installs the newest version in the background.
 
