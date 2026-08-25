@@ -49,19 +49,19 @@ Describe 'Hermes Companion CLI output parsers' {
         It 'recognises a registered Windows Scheduled Task' {
             $output = Get-Content -LiteralPath (Join-Path $fixtureDirectory 'gateway-installed.txt') -Raw -Encoding UTF8
 
-            Get-ProfileGatewayInstalledState $output | Should -BeTrue
+            Get-ProfileGatewayInstalledState $output | Should -Be $true
         }
 
         It 'reports no installation when Hermes reports no gateway service' {
             $output = Get-Content -LiteralPath (Join-Path $fixtureDirectory 'gateway-not-installed.txt') -Raw -Encoding UTF8
 
-            Get-ProfileGatewayInstalledState $output | Should -BeFalse
+            Get-ProfileGatewayInstalledState $output | Should -Be $false
         }
 
         It 'reports no installation when a gateway is running manually' {
             $output = Get-Content -LiteralPath (Join-Path $fixtureDirectory 'gateway-manual.txt') -Raw -Encoding UTF8
 
-            Get-ProfileGatewayInstalledState $output | Should -BeFalse
+            Get-ProfileGatewayInstalledState $output | Should -Be $false
         }
     }
 
@@ -91,14 +91,14 @@ Describe 'Hermes Companion CLI output parsers' {
         It 'reports zero commits behind when Hermes is up to date' {
             $output = Get-Content -LiteralPath (Join-Path $fixtureDirectory 'update-check-up-to-date.txt') -Raw -Encoding UTF8
 
-            Read-UpdateStatus $output | Should -BeTrue
+            Read-UpdateStatus $output | Should -Be $true
             $script:UpdateBehind | Should -Be 0
         }
 
         It 'reports an unspecified available update and its command' {
             $output = Get-Content -LiteralPath (Join-Path $fixtureDirectory 'version-update-available.txt') -Raw -Encoding UTF8
 
-            Read-UpdateStatus $output | Should -BeTrue
+            Read-UpdateStatus $output | Should -Be $true
             $script:UpdateBehind | Should -Be -1
             $script:RecommendedUpdateCommand | Should -Be 'hermes update'
         }
@@ -106,7 +106,7 @@ Describe 'Hermes Companion CLI output parsers' {
         It 'reports the commit distance and recommended command' {
             $output = Get-Content -LiteralPath (Join-Path $fixtureDirectory 'update-check-available.txt') -Raw -Encoding UTF8
 
-            Read-UpdateStatus $output | Should -BeTrue
+            Read-UpdateStatus $output | Should -Be $true
             $script:UpdateBehind | Should -Be 3
             $script:RecommendedUpdateCommand | Should -Be 'hermes update'
         }
