@@ -135,6 +135,7 @@ function Start-HermesDetached {
 }
 
 function Start-HermesOperation {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', '', Justification = 'The .NET event signature requires the positional sender parameter.')]
     param(
         [string[]]$Arguments,
         [scriptblock]$OnComplete,
@@ -166,17 +167,17 @@ function Start-HermesOperation {
         # Process events drain each pipe as data arrives, so a chatty Hermes
         # failure cannot block on a full pipe before it exits.
         $outputDataReceived = {
-            param($sender, $eventArgs)
+            param($eventSource, $receivedEventArgs)
 
-            if ($eventArgs.Data -ne $null) {
-                [void]$outputBuilder.AppendLine($eventArgs.Data)
+            if ($null -ne $receivedEventArgs.Data) {
+                [void]$outputBuilder.AppendLine($receivedEventArgs.Data)
             }
         }.GetNewClosure()
         $errorDataReceived = {
-            param($sender, $eventArgs)
+            param($eventSource, $receivedEventArgs)
 
-            if ($eventArgs.Data -ne $null) {
-                [void]$errorBuilder.AppendLine($eventArgs.Data)
+            if ($null -ne $receivedEventArgs.Data) {
+                [void]$errorBuilder.AppendLine($receivedEventArgs.Data)
             }
         }.GetNewClosure()
         $process.add_OutputDataReceived($outputDataReceived)
