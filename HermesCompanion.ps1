@@ -1065,7 +1065,6 @@ function Get-UpdateBlockingProcess {
         throw 'Could not determine the Hermes installation directory. Hermes Companion will not start an update until it can identify the Python environment.'
     }
 
-    $rootPrefix = $installDirectory.TrimEnd('\') + '\'
     $venvPrefix = (Join-Path $installDirectory 'venv').TrimEnd('\') + '\'
 
     try {
