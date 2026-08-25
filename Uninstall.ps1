@@ -22,5 +22,11 @@ if (Test-Path -LiteralPath $startMenuDirectory) {
     Remove-Item -LiteralPath $startMenuDirectory -Recurse -Force
 }
 
-Write-Host 'Hermes Companion shortcuts were removed and the source checkout was left unchanged.'
+# These are the terminal launcher scripts the companion generated.
+$terminalLaunchers = Get-ChildItem -Path $env:TEMP -Filter 'HermesCompanion-*.cmd' -ErrorAction SilentlyContinue
+foreach ($terminalLauncher in $terminalLaunchers) {
+    Remove-Item -LiteralPath $terminalLauncher.FullName -Force
+}
+
+Write-Host 'Hermes Companion shortcuts and terminal launcher scripts were removed and the source checkout was left unchanged.'
 Write-Host 'Hermes Agent and its gateway were not changed.'

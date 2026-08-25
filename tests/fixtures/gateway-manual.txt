@@ -1,0 +1,5 @@
+✓ Gateway is running (PID: 1234)
+  (Running manually, not as a system service)
+
+To install as a Windows Scheduled Task (auto-start on login):
+  hermes gateway install

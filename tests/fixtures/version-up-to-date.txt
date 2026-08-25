@@ -1,0 +1,6 @@
+Hermes Agent v0.20.5 (2026-08-01)
+Install directory: C:\Users\Daniel\hermes-agent
+Install method: git
+Python: 3.11.9
+OpenAI SDK: 1.2.3
+Up to date

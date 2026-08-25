@@ -1,5 +1,7 @@
 [CmdletBinding()]
-param()
+param(
+    [switch]$ParsersOnly
+)
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
@@ -256,9 +258,6 @@ function New-TrayIcon {
     $bitmap.Dispose()
     return $mutedIcon
 }
-
-$script:ActiveIcon = New-TrayIcon
-$script:MutedIcon = New-TrayIcon -Muted
 
 function Show-Notification {
     param(
@@ -1624,6 +1623,16 @@ function Add-MenuHeading {
     $heading.Margin = New-Object System.Windows.Forms.Padding 4, 3, 4, 0
     $Menu.Items.Add($heading) | Out-Null
 }
+
+# Parser tests dot-source this script to exercise the CLI-output readers
+# without loading WinForms or creating the notification-area application.
+if ($ParsersOnly) {
+    return
+}
+
+# Icon construction is eager launch-time work, so it stays after the parser-only exit.
+$script:ActiveIcon = New-TrayIcon
+$script:MutedIcon = New-TrayIcon -Muted
 
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 $createdNew = $false

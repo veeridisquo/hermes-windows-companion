@@ -40,6 +40,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Install.ps1 -NoAutoStart
 
 The **Start with Windows** tray-menu option can enable or disable auto-start later.
 
+To register the shortcuts without starting the companion:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\Install.ps1 -NoLaunch
+```
+
 ## Use
 
 Right-click the Hermes icon in the Windows notification area. Windows may initially place it behind the notification-area overflow arrow.
@@ -75,7 +81,7 @@ configuration, approvals, or credentials.
 
 Hermes Companion has no telemetry and no network client of its own. It opens the local loopback dashboard and invokes the locally installed `hermes` CLI only when needed for status checks or an action you select. Profile information comes from `hermes profile list` and `hermes profile show`, read at startup and whenever you select **Refresh status**. Hermes Agent itself may use the network according to its own configuration.
 
-The version and update status come from `hermes --version` at startup. That command is a Hermes feature: Hermes contacts its own upstream git remote and caches the result for six hours. **Check for updates** runs `hermes update --check`, which always fetches. Installing an update runs `hermes update` the way the Hermes web dashboard runs it: with `HERMES_NONINTERACTIVE=1`, stdin closed, and output merged into one log. Hermes then answers its own prompts from `updates.non_interactive_local_changes` rather than waiting for input that cannot arrive.
+The version and update status come from `hermes --version` at startup. That command is a Hermes feature: Hermes contacts its own upstream git remote and caches the result for six hours. **Check for updates** runs `hermes update --check`, which always fetches. Installing an update redirects output to a log file and supplies no stdin, so Hermes detects a non-interactive run. Hermes then resolves local source changes from `updates.non_interactive_local_changes` instead of prompting for input.
 
 The companion does not read `.env`, `auth.json`, provider tokens, gateway credentials, or model configuration. It does not change Hermes approval settings and never uses `--yolo`.
 
@@ -97,6 +103,14 @@ The tray icon comes from the official [NousResearch/hermes-agent](https://github
 - Hermes refuses to update while any process holds its Python environment, because a dependency sync that dies partway strands the install between versions. Before an update, Hermes Companion lists every such process in the confirmation dialog and stops it. Unsaved work in those processes is lost. The dashboard is started again afterwards. The gateway is left alone, because Hermes pauses and restarts it itself.
 - Hermes Companion never passes `--force` or `--force-venv`. Those skip the guards that keep a failed update from corrupting the install.
 - Only a git installation can be updated in place. For a Docker, Nix, or Termux install, Hermes Companion shows the update command Hermes recommends instead of running one.
+
+## Development
+
+Run the parser suite with Windows PowerShell 5.1:
+
+```powershell
+Invoke-Pester -Path .\tests
+```
 
 ## Contributing
 

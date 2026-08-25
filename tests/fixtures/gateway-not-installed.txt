@@ -1,0 +1,5 @@
+✗ Gateway service not installed
+✗ No gateway process detected
+
+To install:
+  hermes gateway install
