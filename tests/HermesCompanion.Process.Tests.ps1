@@ -10,6 +10,7 @@ Describe 'Hermes Companion native command execution' {
         $script:ActiveOperation = $null
         $script:UpdateInProgress = $false
         $script:CapturedOperationResult = $null
+        $script:CapturedOperationContext = $null
     }
 
     It 'drains both output streams without crashing the PowerShell host' {
@@ -18,9 +19,10 @@ Describe 'Hermes Companion native command execution' {
             '-NonInteractive',
             '-Command',
             '1..3000 | ForEach-Object { [Console]::Out.WriteLine(("stdout-{0:D4}-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" -f $_)); [Console]::Error.WriteLine(("stderr-{0:D4}-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" -f $_)) }'
-        ) -OnComplete {
-            param($result)
+        ) -Context ([pscustomobject]@{ Request = 'high-volume-probe' }) -OnComplete {
+            param($result, $context)
             $script:CapturedOperationResult = $result
+            $script:CapturedOperationContext = $context
         }
 
         $deadline = [DateTime]::UtcNow.AddSeconds(5)
@@ -32,6 +34,7 @@ Describe 'Hermes Companion native command execution' {
         $started | Should -Be $true
         $script:ActiveOperation | Should -BeNullOrEmpty
         $script:CapturedOperationResult.ExitCode | Should -Be 0
+        $script:CapturedOperationContext.Request | Should -Be 'high-volume-probe'
 
         $outputLines = @($script:CapturedOperationResult.Output -split "`r?`n")
         $errorLines = @($script:CapturedOperationResult.Error -split "`r?`n")

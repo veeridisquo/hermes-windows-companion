@@ -164,6 +164,7 @@ function Start-HermesOperation {
     param(
         [string[]]$Arguments,
         [scriptblock]$OnComplete,
+        $Context = $null,
         [int]$TimeoutSeconds = 30,
         [switch]$QuietWhenBusy
     )
@@ -196,10 +197,14 @@ function Start-HermesOperation {
         $outputTask = $process.StandardOutput.ReadToEndAsync()
         $errorTask = $process.StandardError.ReadToEndAsync()
 
+        # Keep callback data separate from script state. GetNewClosure creates
+        # a dynamic module, so $script: assignments inside it do not update the
+        # companion state that the tray menu reads.
         $script:ActiveOperation = [pscustomobject]@{
             Process = $process
             Arguments = $Arguments
             OnComplete = $OnComplete
+            Context = $Context
             StartedAt = [DateTime]::UtcNow
             TimeoutSeconds = $TimeoutSeconds
             OutputTask = $outputTask
@@ -268,7 +273,7 @@ function Complete-ActiveOperation {
     $script:ActiveOperation = $null
 
     try {
-        & $operation.OnComplete $result
+        & $operation.OnComplete $result $operation.Context
     }
     catch {
         $script:LastError = $_.Exception.Message
@@ -570,6 +575,76 @@ function Set-StatusRefreshInterval {
     }
 }
 
+function Complete-DashboardStatusRefresh {
+    param(
+        $DashboardResult,
+        $Context
+    )
+
+    $dashboardText = "$($DashboardResult.Output)`n$($DashboardResult.Error)"
+    $script:DashboardPort = $script:DefaultDashboardPort
+    # Dashboard status reports dashboard command lines, which makes its
+    # explicit port the authoritative port for the companion to use.
+    foreach ($dashboardLine in ($dashboardText -split "`r?`n")) {
+        if ($dashboardLine -match '(?i)\bdashboard\b' -and $dashboardLine -match '(?i)--port(?:=|\s+)(\d{1,5})(?:\s|$)') {
+            $candidatePort = [int]$Matches[1]
+            if ($candidatePort -gt 0 -and $candidatePort -le 65535) {
+                $script:DashboardPort = $candidatePort
+                break
+            }
+        }
+    }
+    $reportedRunning = $DashboardResult.ExitCode -eq 0 -and $dashboardText -notmatch '(?i)no hermes dashboard processes running'
+    # Serve is intentionally absent from dashboard status. A listening
+    # Desktop backend must not be presented as a dashboard we can stop.
+    $script:DashboardRunning = $reportedRunning
+    if ($DashboardResult.ExitCode -ne 0 -and -not $script:LastError) {
+        $script:LastError = if ($DashboardResult.Error) { $DashboardResult.Error } else { 'Dashboard status failed.' }
+    }
+    $statusChanged = $Context.PreviousGatewayRunning -ne $script:GatewayRunning -or
+        $Context.PreviousDashboardRunning -ne $script:DashboardRunning -or
+        $Context.PreviousDashboardPort -ne $script:DashboardPort -or
+        $Context.PreviousLastError -ne $script:LastError
+    Set-StatusRefreshInterval -Reset:($statusChanged -or -not $Context.Scheduled)
+    Update-TrayDisplay
+}
+
+function Complete-GatewayStatusRefresh {
+    param(
+        $GatewayResult,
+        $Context
+    )
+
+    $gatewayText = "$($GatewayResult.Output)`n$($GatewayResult.Error)"
+    # 'gateway list' has one row per profile. The current marker identifies
+    # the profile that unqualified gateway actions control; a running row
+    # does not always include a PID when its pid file cannot be read.
+    $activeGatewayLine = $null
+    foreach ($gatewayLine in ($gatewayText -split "`r?`n")) {
+        if ($gatewayLine -match '\(current\)') {
+            $activeGatewayLine = $gatewayLine
+            break
+        }
+    }
+    $script:GatewayRunning = $false
+    if ($GatewayResult.ExitCode -eq 0 -and $activeGatewayLine) {
+        $script:GatewayRunning = $activeGatewayLine -notmatch '(?i)\bnot running\b'
+    }
+    if ($GatewayResult.ExitCode -ne 0) {
+        $script:LastError = if ($GatewayResult.Error) { $GatewayResult.Error } else { 'Gateway status failed.' }
+    }
+
+    if (Sync-ExternalHermesUpdateState) {
+        return
+    }
+
+    $onComplete = {
+        param($dashboardResult, $context)
+        Complete-DashboardStatusRefresh -DashboardResult $dashboardResult -Context $context
+    }
+    Start-HermesOperation -Arguments @('dashboard', '--status') -QuietWhenBusy -OnComplete $onComplete -Context $Context | Out-Null
+}
+
 function Request-StatusRefresh {
     param([switch]$Scheduled)
 
@@ -603,66 +678,18 @@ function Request-StatusRefresh {
         return
     }
 
-    $previousGatewayRunning = $script:GatewayRunning
-    $previousDashboardRunning = $script:DashboardRunning
-    $previousDashboardPort = $script:DashboardPort
-    $started = Start-HermesOperation -Arguments @('gateway', 'list') -QuietWhenBusy -OnComplete {
-        param($gatewayResult)
-
-        $gatewayText = "$($gatewayResult.Output)`n$($gatewayResult.Error)"
-        # 'gateway list' has one row per profile. The current marker identifies
-        # the profile that unqualified gateway actions control; a running row
-        # does not always include a PID when its pid file cannot be read.
-        $activeGatewayLine = $null
-        foreach ($gatewayLine in ($gatewayText -split "`r?`n")) {
-            if ($gatewayLine -match '\(current\)') {
-                $activeGatewayLine = $gatewayLine
-                break
-            }
-        }
-        $script:GatewayRunning = $false
-        if ($gatewayResult.ExitCode -eq 0 -and $activeGatewayLine) {
-            $script:GatewayRunning = $activeGatewayLine -notmatch '(?i)\bnot running\b'
-        }
-        if ($gatewayResult.ExitCode -ne 0) {
-            $script:LastError = if ($gatewayResult.Error) { $gatewayResult.Error } else { 'Gateway status failed.' }
-        }
-
-        if (Sync-ExternalHermesUpdateState) {
-            return
-        }
-
-        Start-HermesOperation -Arguments @('dashboard', '--status') -QuietWhenBusy -OnComplete {
-            param($dashboardResult)
-
-            $dashboardText = "$($dashboardResult.Output)`n$($dashboardResult.Error)"
-            $script:DashboardPort = $script:DefaultDashboardPort
-            # Dashboard status reports dashboard command lines, which makes its
-            # explicit port the authoritative port for the companion to use.
-            foreach ($dashboardLine in ($dashboardText -split "`r?`n")) {
-                if ($dashboardLine -match '(?i)\bdashboard\b' -and $dashboardLine -match '(?i)--port(?:=|\s+)(\d{1,5})(?:\s|$)') {
-                    $candidatePort = [int]$Matches[1]
-                    if ($candidatePort -gt 0 -and $candidatePort -le 65535) {
-                        $script:DashboardPort = $candidatePort
-                        break
-                    }
-                }
-            }
-            $reportedRunning = $dashboardResult.ExitCode -eq 0 -and $dashboardText -notmatch '(?i)no hermes dashboard processes running'
-            # Serve is intentionally absent from dashboard status. A listening
-            # Desktop backend must not be presented as a dashboard we can stop.
-            $script:DashboardRunning = $reportedRunning
-            if ($dashboardResult.ExitCode -ne 0 -and -not $script:LastError) {
-                $script:LastError = if ($dashboardResult.Error) { $dashboardResult.Error } else { 'Dashboard status failed.' }
-            }
-            $statusChanged = $previousGatewayRunning -ne $script:GatewayRunning -or
-                $previousDashboardRunning -ne $script:DashboardRunning -or
-                $previousDashboardPort -ne $script:DashboardPort -or
-                $previousLastError -ne $script:LastError
-            Set-StatusRefreshInterval -Reset:($statusChanged -or -not $Scheduled)
-            Update-TrayDisplay
-        }.GetNewClosure() | Out-Null
-    }.GetNewClosure()
+    $refreshContext = [pscustomobject]@{
+        Scheduled = [bool]$Scheduled
+        PreviousGatewayRunning = $script:GatewayRunning
+        PreviousDashboardRunning = $script:DashboardRunning
+        PreviousDashboardPort = $script:DashboardPort
+        PreviousLastError = $previousLastError
+    }
+    $onComplete = {
+        param($gatewayResult, $context)
+        Complete-GatewayStatusRefresh -GatewayResult $gatewayResult -Context $context
+    }
+    $started = Start-HermesOperation -Arguments @('gateway', 'list') -QuietWhenBusy -OnComplete $onComplete -Context $refreshContext
 
     if (-not $started) {
         if ($Scheduled) {
@@ -676,18 +703,18 @@ function Invoke-GatewayAction {
     param([ValidateSet('start', 'stop', 'restart')][string]$Action)
 
     $onComplete = {
-        param($result)
+        param($result, $context)
 
         if ($result.ExitCode -eq 0) {
-            Show-Notification "Gateway $Action requested" 'Hermes completed the command.'
+            Show-Notification "Gateway $($context.Action) requested" 'Hermes completed the command.'
         }
         else {
             $message = if ($result.Error) { $result.Error } else { $result.Output }
             Show-CompanionError "Gateway command failed.`n`n$message"
         }
         Request-StatusRefresh
-    }.GetNewClosure()
-    Start-HermesOperation -Arguments @('gateway', $Action) -OnComplete $onComplete | Out-Null
+    }
+    Start-HermesOperation -Arguments @('gateway', $Action) -OnComplete $onComplete -Context ([pscustomobject]@{ Action = $Action }) | Out-Null
 }
 
 function Show-GatewayStatus {
@@ -737,7 +764,7 @@ function Stop-Dashboard {
             Show-CompanionError "Dashboard stop failed.`n`n$message"
         }
         Request-StatusRefresh
-    }.GetNewClosure()
+    }
     Start-HermesOperation -Arguments @('dashboard', '--stop') -OnComplete $onComplete | Out-Null
 }
 
@@ -1002,26 +1029,31 @@ function Read-ProfileList {
     return @($profiles)
 }
 
-function Request-ProfileRefresh {
-    if ($script:UpdateInProgress -or -not $script:HermesPath) {
-        return
-    }
+function Complete-ProfileRefresh {
+    param($Result)
 
     if (-not (Get-Variable -Scope Script -Name ProfileRefreshGeneration -ErrorAction SilentlyContinue)) {
         $script:ProfileRefreshGeneration = 0
     }
 
+    $script:ProfileRefreshPending = $false
+    if ($Result.ExitCode -eq 0) {
+        $script:ProfileRefreshGeneration++
+        $script:Profiles = Read-ProfileList "$($Result.Output)`n$($Result.Error)"
+    }
+    Update-ProfileMenu
+    Request-ProfileGatewayInstallationRefresh
+}
+
+function Request-ProfileRefresh {
+    if ($script:UpdateInProgress -or -not $script:HermesPath) {
+        return
+    }
+
     $onComplete = {
         param($result)
-
-        $script:ProfileRefreshPending = $false
-        if ($result.ExitCode -eq 0) {
-            $script:ProfileRefreshGeneration++
-            $script:Profiles = Read-ProfileList "$($result.Output)`n$($result.Error)"
-        }
-        Update-ProfileMenu
-        Request-ProfileGatewayInstallationRefresh
-    }.GetNewClosure()
+        Complete-ProfileRefresh $result
+    }
     $started = Start-HermesOperation -Arguments @('profile', 'list') -QuietWhenBusy -OnComplete $onComplete
 
     if ($started) {
@@ -1050,6 +1082,34 @@ function Get-ProfileGatewayInstalledState {
     }
 
     return $null
+}
+
+function Complete-ProfileGatewayInstallationRefresh {
+    param(
+        $Result,
+        $HermesProfile,
+        [int]$NextIndex,
+        [int]$Generation
+    )
+
+    if ($Generation -ne $script:ProfileRefreshGeneration) {
+        if ($script:ProfileGatewayInstallationRefreshGeneration -eq $Generation) {
+            $script:ProfileGatewayInstallationRefreshInProgress = $false
+            $script:ProfileGatewayInstallationRefreshGeneration = -1
+        }
+        Request-ProfileGatewayInstallationRefresh
+        return
+    }
+
+    if ($Result.ExitCode -eq 0) {
+        $HermesProfile.GatewayInstalled = Get-ProfileGatewayInstalledState "$($Result.Output)`n$($Result.Error)"
+    }
+    else {
+        $HermesProfile.GatewayInstalled = $null
+    }
+
+    Update-ProfileMenu
+    Request-ProfileGatewayInstallationRefresh -Index $NextIndex -Generation $Generation
 }
 
 function Request-ProfileGatewayInstallationRefresh {
@@ -1098,29 +1158,16 @@ function Request-ProfileGatewayInstallationRefresh {
     }
 
     $hermesProfile = $profiles[$Index]
+    $refreshContext = [pscustomobject]@{
+        HermesProfile = $hermesProfile
+        NextIndex = $Index + 1
+        Generation = $Generation
+    }
     $onComplete = {
-        param($result)
-
-        if ($Generation -ne $script:ProfileRefreshGeneration) {
-            if ($script:ProfileGatewayInstallationRefreshGeneration -eq $Generation) {
-                $script:ProfileGatewayInstallationRefreshInProgress = $false
-                $script:ProfileGatewayInstallationRefreshGeneration = -1
-            }
-            Request-ProfileGatewayInstallationRefresh
-            return
-        }
-
-        if ($result.ExitCode -eq 0) {
-            $hermesProfile.GatewayInstalled = Get-ProfileGatewayInstalledState "$($result.Output)`n$($result.Error)"
-        }
-        else {
-            $hermesProfile.GatewayInstalled = $null
-        }
-
-        Update-ProfileMenu
-        Request-ProfileGatewayInstallationRefresh -Index ($Index + 1) -Generation $Generation
-    }.GetNewClosure()
-    $started = Start-HermesOperation -Arguments @('-p', $hermesProfile.Name, 'gateway', 'status') -QuietWhenBusy -OnComplete $onComplete
+        param($result, $context)
+        Complete-ProfileGatewayInstallationRefresh -Result $result -HermesProfile $context.HermesProfile -NextIndex $context.NextIndex -Generation $context.Generation
+    }
+    $started = Start-HermesOperation -Arguments @('-p', $hermesProfile.Name, 'gateway', 'status') -QuietWhenBusy -OnComplete $onComplete -Context $refreshContext
 
     if (-not $started) {
         # A refresh will retry after the command already in flight completes.
@@ -1265,6 +1312,24 @@ function Open-ProfileFolder {
     } | Out-Null
 }
 
+function Complete-ProfileGatewayAction {
+    param(
+        $Result,
+        [string]$Name,
+        [ValidateSet('start', 'stop', 'restart')][string]$Action
+    )
+
+    if ($Result.ExitCode -eq 0) {
+        Show-Notification "Gateway $Action requested" "Profile $Name"
+    }
+    else {
+        $message = if ($Result.Error) { $Result.Error } else { $Result.Output }
+        Show-CompanionError "Gateway command failed for profile '$Name'.`n`n$message"
+    }
+    $script:ProfileRefreshPending = $true
+    Request-StatusRefresh
+}
+
 function Invoke-ProfileGatewayAction {
     param(
         [string]$Name,
@@ -1272,19 +1337,11 @@ function Invoke-ProfileGatewayAction {
     )
 
     $onComplete = {
-        param($result)
-
-        if ($result.ExitCode -eq 0) {
-            Show-Notification "Gateway $Action requested" "Profile $Name"
-        }
-        else {
-            $message = if ($result.Error) { $result.Error } else { $result.Output }
-            Show-CompanionError "Gateway command failed for profile '$Name'.`n`n$message"
-        }
-        $script:ProfileRefreshPending = $true
-        Request-StatusRefresh
-    }.GetNewClosure()
-    Start-HermesOperation -Arguments @('-p', $Name, 'gateway', $Action) -OnComplete $onComplete | Out-Null
+        param($result, $context)
+        Complete-ProfileGatewayAction -Result $result -Name $context.Name -Action $context.Action
+    }
+    $operationContext = [pscustomobject]@{ Name = $Name; Action = $Action }
+    Start-HermesOperation -Arguments @('-p', $Name, 'gateway', $Action) -OnComplete $onComplete -Context $operationContext | Out-Null
 }
 
 function New-ProfileMenu {
@@ -1337,33 +1394,39 @@ function Update-ProfileMenu {
         $item = New-Object System.Windows.Forms.ToolStripMenuItem ("$name ($($labels -join ', '))")
 
         $terminalItem = New-Object System.Windows.Forms.ToolStripMenuItem 'Open Hermes in terminal'
-        $terminalItem.add_Click({ Open-ProfileTerminal -Name $name }.GetNewClosure())
+        $terminalItem.Tag = $name
+        $terminalItem.add_Click({ Open-ProfileTerminal -Name ([string]$this.Tag) })
         $item.DropDownItems.Add($terminalItem) | Out-Null
 
         $detailsItem = New-Object System.Windows.Forms.ToolStripMenuItem 'View details'
-        $detailsItem.add_Click({ Show-ProfileDetails -Name $name }.GetNewClosure())
+        $detailsItem.Tag = $name
+        $detailsItem.add_Click({ Show-ProfileDetails -Name ([string]$this.Tag) })
         $item.DropDownItems.Add($detailsItem) | Out-Null
 
         $folderItem = New-Object System.Windows.Forms.ToolStripMenuItem 'Open profile folder'
-        $folderItem.add_Click({ Open-ProfileFolder -Name $name }.GetNewClosure())
+        $folderItem.Tag = $name
+        $folderItem.add_Click({ Open-ProfileFolder -Name ([string]$this.Tag) })
         $item.DropDownItems.Add($folderItem) | Out-Null
 
         $item.DropDownItems.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
 
         $startItem = New-Object System.Windows.Forms.ToolStripMenuItem 'Start gateway'
         $startItem.Enabled = $hermesProfile.GatewayInstalled -eq $true -and -not $hermesProfile.GatewayRunning
-        $startItem.add_Click({ Invoke-ProfileGatewayAction -Name $name -Action 'start' }.GetNewClosure())
+        $startItem.Tag = $name
+        $startItem.add_Click({ Invoke-ProfileGatewayAction -Name ([string]$this.Tag) -Action 'start' })
         $item.DropDownItems.Add($startItem) | Out-Null
 
         $stopItem = New-Object System.Windows.Forms.ToolStripMenuItem 'Stop gateway'
         $stopItem.Enabled = $hermesProfile.GatewayRunning
-        $stopItem.add_Click({ Invoke-ProfileGatewayAction -Name $name -Action 'stop' }.GetNewClosure())
+        $stopItem.Tag = $name
+        $stopItem.add_Click({ Invoke-ProfileGatewayAction -Name ([string]$this.Tag) -Action 'stop' })
         $item.DropDownItems.Add($stopItem) | Out-Null
 
         if ($hermesProfile.GatewayInstalled -eq $false) {
             $item.DropDownItems.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
             $installItem = New-Object System.Windows.Forms.ToolStripMenuItem 'Install gateway...'
-            $installItem.add_Click({ Install-ProfileGateway -Name $name }.GetNewClosure())
+            $installItem.Tag = $name
+            $installItem.add_Click({ Install-ProfileGateway -Name ([string]$this.Tag) })
             $item.DropDownItems.Add($installItem) | Out-Null
         }
 
@@ -2011,6 +2074,33 @@ function Complete-UpdateOperation {
     Request-StatusRefresh
 }
 
+function Invoke-PollTick {
+    <#
+        Keep the ordered poll work inside a named PowerShell scope. A return
+        from a script-defined function called directly by a WinForms event
+        delegate ends that delegate invocation, which previously prevented
+        every step after Update-UpdateProgress from running.
+    #>
+    Update-UpdateProgress
+    Complete-UpdateOperation
+    Complete-ActiveOperation
+    if (Sync-ExternalHermesUpdateState) {
+        return
+    }
+    if ($script:ActiveOperation -or $script:UpdateInProgress) {
+        return
+    }
+    if ($script:RefreshPending) {
+        Request-StatusRefresh
+    }
+    elseif ($script:VersionCheckPending) {
+        Request-VersionCheck
+    }
+    elseif ($script:ProfileRefreshPending) {
+        Request-ProfileRefresh
+    }
+}
+
 function Set-StartupEnabled {
     param([bool]$Enabled)
 
@@ -2199,7 +2289,7 @@ $script:UpdateLogItem.add_Click({
     else {
         Show-CompanionError "No update log exists yet:`n$path"
     }
-}.GetNewClosure())
+})
 $menu.Items.Add($script:UpdateLogItem) | Out-Null
 
 $logsItem = New-Object System.Windows.Forms.ToolStripMenuItem 'Open logs folder'
@@ -2213,7 +2303,7 @@ $logsItem.add_Click({
     else {
         Show-CompanionError "The Hermes logs directory does not exist yet:`n$script:LogsPath"
     }
-}.GetNewClosure())
+})
 $menu.Items.Add($logsItem) | Out-Null
 $menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
 
@@ -2233,35 +2323,16 @@ $script:TrayIcon.add_DoubleClick({ Open-Dashboard })
 
 $pollTimer = New-Object System.Windows.Forms.Timer
 $pollTimer.Interval = 250
-$pollTimer.add_Tick({
-    Update-UpdateProgress
-    Complete-UpdateOperation
-    Complete-ActiveOperation
-    if (Sync-ExternalHermesUpdateState) {
-        return
-    }
-    if ($script:ActiveOperation -or $script:UpdateInProgress) {
-        return
-    }
-    if ($script:RefreshPending) {
-        Request-StatusRefresh
-    }
-    elseif ($script:VersionCheckPending) {
-        Request-VersionCheck
-    }
-    elseif ($script:ProfileRefreshPending) {
-        Request-ProfileRefresh
-    }
-}.GetNewClosure())
+$pollTimer.add_Tick({ Invoke-PollTick })
 $pollTimer.Start()
 
 $script:RefreshTimer = New-Object System.Windows.Forms.Timer
 $script:RefreshTimer.Interval = 60000
-$script:RefreshTimer.add_Tick({ Request-StatusRefresh -Scheduled }.GetNewClosure())
+$script:RefreshTimer.add_Tick({ Request-StatusRefresh -Scheduled })
 $script:RefreshTimer.Start()
 
 $applicationContext = New-Object System.Windows.Forms.ApplicationContext
-$exitItem.add_Click({ $applicationContext.ExitThread() }.GetNewClosure())
+$exitItem.add_Click({ [System.Windows.Forms.Application]::ExitThread() })
 
 try {
     Request-StatusRefresh
