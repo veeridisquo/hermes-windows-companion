@@ -1,50 +1,10 @@
 [CmdletBinding()]
-param()
+param(
+    [switch]$ParsersOnly
+)
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
-
-Add-Type -AssemblyName System.Windows.Forms
-Add-Type -AssemblyName System.Drawing
-Add-Type @'
-using System;
-using System.Runtime.InteropServices;
-
-public static class HermesCompanionNativeMethods
-{
-    [DllImport("user32.dll", CharSet = CharSet.Auto)]
-    public static extern bool DestroyIcon(IntPtr handle);
-}
-'@
-
-[System.Windows.Forms.Application]::EnableVisualStyles()
-
-$script:AppName = 'Hermes Companion'
-$script:DashboardUrl = 'http://127.0.0.1:9119'
-$script:LogsPath = Join-Path $env:LOCALAPPDATA 'hermes\logs'
-$script:IconPath = Join-Path $PSScriptRoot 'hermes-agent.ico'
-$script:StartupShortcut = Join-Path ([Environment]::GetFolderPath('Startup')) 'Hermes Companion.lnk'
-$script:HermesPath = $null
-$script:ActiveOperation = $null
-$script:RefreshPending = $false
-$script:GatewayRunning = $false
-$script:DashboardRunning = $false
-$script:LastError = $null
-$script:HermesVersion = $null
-$script:UpdateBehind = $null
-$script:UpdateNotified = $false
-$script:VersionCheckPending = $true
-$script:UpdateInProgress = $false
-$script:UpdateOperation = $null
-$script:RestartDashboardAfterUpdate = $false
-$script:HermesInstallDirectory = $null
-$script:HermesInstallMethod = $null
-$script:RecommendedUpdateCommand = $null
-$script:UpdateStatusText = $null
-$script:UpdateProgressReadAt = [DateTime]::MinValue
-$script:UpdateHeartbeatAt = [DateTime]::MinValue
-$script:Profiles = @()
-$script:ProfileRefreshPending = $true
 
 function Show-CompanionError {
     param([string]$Message)
@@ -1624,6 +1584,54 @@ function Add-MenuHeading {
     $heading.Margin = New-Object System.Windows.Forms.Padding 4, 3, 4, 0
     $Menu.Items.Add($heading) | Out-Null
 }
+
+# Parser tests dot-source this script to exercise the CLI-output readers
+# without loading WinForms or creating the notification-area application.
+if ($ParsersOnly) {
+    return
+}
+
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+
+public static class HermesCompanionNativeMethods
+{
+    [DllImport("user32.dll", CharSet = CharSet.Auto)]
+    public static extern bool DestroyIcon(IntPtr handle);
+}
+'@
+
+[System.Windows.Forms.Application]::EnableVisualStyles()
+
+$script:AppName = 'Hermes Companion'
+$script:DashboardUrl = 'http://127.0.0.1:9119'
+$script:LogsPath = Join-Path $env:LOCALAPPDATA 'hermes\logs'
+$script:IconPath = Join-Path $PSScriptRoot 'hermes-agent.ico'
+$script:StartupShortcut = Join-Path ([Environment]::GetFolderPath('Startup')) 'Hermes Companion.lnk'
+$script:HermesPath = $null
+$script:ActiveOperation = $null
+$script:RefreshPending = $false
+$script:GatewayRunning = $false
+$script:DashboardRunning = $false
+$script:LastError = $null
+$script:HermesVersion = $null
+$script:UpdateBehind = $null
+$script:UpdateNotified = $false
+$script:VersionCheckPending = $true
+$script:UpdateInProgress = $false
+$script:UpdateOperation = $null
+$script:RestartDashboardAfterUpdate = $false
+$script:HermesInstallDirectory = $null
+$script:HermesInstallMethod = $null
+$script:RecommendedUpdateCommand = $null
+$script:UpdateStatusText = $null
+$script:UpdateProgressReadAt = [DateTime]::MinValue
+$script:UpdateHeartbeatAt = [DateTime]::MinValue
+$script:Profiles = @()
+$script:ProfileRefreshPending = $true
 
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 $createdNew = $false
