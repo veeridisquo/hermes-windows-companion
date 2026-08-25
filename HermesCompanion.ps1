@@ -22,7 +22,7 @@ public static class HermesCompanionNativeMethods
 [System.Windows.Forms.Application]::EnableVisualStyles()
 
 $script:AppName = 'Hermes Companion'
-$script:LogsPath = Join-Path $env:LOCALAPPDATA 'hermes\logs'
+$script:LogsPath = if ($env:HERMES_HOME) { Join-Path $env:HERMES_HOME 'logs' } elseif ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA 'hermes\logs' } else { $null }
 $script:IconPath = Join-Path $PSScriptRoot 'hermes-agent.ico'
 $script:StartupShortcut = Join-Path ([Environment]::GetFolderPath('Startup')) 'Hermes Companion.lnk'
 $script:HermesPath = $null
@@ -136,12 +136,20 @@ function Start-HermesDetached {
 }
 
 function Start-HermesOperation {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', '', Justification = 'The .NET event signature requires the positional sender parameter.')]
     param(
         [string[]]$Arguments,
         [scriptblock]$OnComplete,
         [int]$TimeoutSeconds = 30,
         [switch]$QuietWhenBusy
     )
+
+    if ($script:UpdateInProgress) {
+        if (-not $QuietWhenBusy) {
+            Show-Notification 'Hermes update in progress' 'Wait for the update to finish before running another command.'
+        }
+        return $false
+    }
 
     if ($script:ActiveOperation) {
         if (-not $QuietWhenBusy) {
@@ -150,13 +158,36 @@ function Start-HermesOperation {
         return $false
     }
 
+    $process = $null
     try {
         $info = New-HermesProcessStartInfo -Arguments $Arguments -RedirectOutput
         $process = New-Object System.Diagnostics.Process
         $process.StartInfo = $info
+        $outputBuilder = New-Object System.Text.StringBuilder
+        $errorBuilder = New-Object System.Text.StringBuilder
+        # Process events drain each pipe as data arrives, so a chatty Hermes
+        # failure cannot block on a full pipe before it exits.
+        $outputDataReceived = {
+            param($eventSource, $receivedEventArgs)
+
+            if ($null -ne $receivedEventArgs.Data) {
+                [void]$outputBuilder.AppendLine($receivedEventArgs.Data)
+            }
+        }.GetNewClosure()
+        $errorDataReceived = {
+            param($eventSource, $receivedEventArgs)
+
+            if ($null -ne $receivedEventArgs.Data) {
+                [void]$errorBuilder.AppendLine($receivedEventArgs.Data)
+            }
+        }.GetNewClosure()
+        $process.add_OutputDataReceived($outputDataReceived)
+        $process.add_ErrorDataReceived($errorDataReceived)
         if (-not $process.Start()) {
             throw 'The Hermes process did not start.'
         }
+        $process.BeginOutputReadLine()
+        $process.BeginErrorReadLine()
 
         $script:ActiveOperation = [pscustomobject]@{
             Process = $process
@@ -164,10 +195,28 @@ function Start-HermesOperation {
             OnComplete = $OnComplete
             StartedAt = [DateTime]::UtcNow
             TimeoutSeconds = $TimeoutSeconds
+            OutputBuilder = $outputBuilder
+            ErrorBuilder = $errorBuilder
+            OutputDataReceived = $outputDataReceived
+            ErrorDataReceived = $errorDataReceived
         }
         return $true
     }
     catch {
+        if ($process) {
+            # A reader setup failure leaves no operation to manage a process
+            # that may have started, so stop it before releasing the handle.
+            try {
+                if (-not $process.HasExited) {
+                    $process.Kill()
+                    $process.WaitForExit()
+                }
+            }
+            catch {
+                Write-Verbose 'The Hermes process could not be stopped after startup failed.'
+            }
+            $process.Dispose()
+        }
         $script:LastError = $_.Exception.Message
         Update-TrayDisplay
         if (-not $QuietWhenBusy) {
@@ -189,7 +238,8 @@ function Complete-ActiveOperation {
     }
 
     if ($timedOut -and -not $operation.Process.HasExited) {
-        try { $operation.Process.Kill() } catch {}
+        try { $operation.Process.Kill() } catch { Write-Verbose 'The timed out Hermes process was already gone.' }
+        $operation.Process.WaitForExit()
         $result = [pscustomobject]@{
             ExitCode = -1
             Output = ''
@@ -197,15 +247,18 @@ function Complete-ActiveOperation {
         }
     }
     else {
-        $output = $operation.Process.StandardOutput.ReadToEnd()
-        $errorOutput = $operation.Process.StandardError.ReadToEnd()
+        # Wait once more after exit so the asynchronous readers receive their
+        # final lines before their builders are converted to result strings.
+        $operation.Process.WaitForExit()
         $result = [pscustomobject]@{
             ExitCode = $operation.Process.ExitCode
-            Output = $output.Trim()
-            Error = $errorOutput.Trim()
+            Output = $operation.OutputBuilder.ToString().Trim()
+            Error = $operation.ErrorBuilder.ToString().Trim()
         }
     }
 
+    $operation.Process.remove_OutputDataReceived($operation.OutputDataReceived)
+    $operation.Process.remove_ErrorDataReceived($operation.ErrorDataReceived)
     $operation.Process.Dispose()
     $script:ActiveOperation = $null
 
@@ -454,7 +507,7 @@ function Request-StatusRefresh {
 function Invoke-GatewayAction {
     param([ValidateSet('start', 'stop', 'restart')][string]$Action)
 
-    Start-HermesOperation -Arguments @('gateway', $Action) -OnComplete {
+    $onComplete = {
         param($result)
 
         if ($result.ExitCode -eq 0) {
@@ -465,7 +518,8 @@ function Invoke-GatewayAction {
             Show-CompanionError "Gateway command failed.`n`n$message"
         }
         Request-StatusRefresh
-    } | Out-Null
+    }.GetNewClosure()
+    Start-HermesOperation -Arguments @('gateway', $Action) -OnComplete $onComplete | Out-Null
 }
 
 function Show-GatewayStatus {
@@ -736,18 +790,39 @@ function Read-ProfileList {
             continue
         }
 
-        $fields = @($stripped -split '\s{2,}')
-        $name = $fields[0].Trim()
-        if ($name -notmatch '^[A-Za-z0-9._-]+$' -or $name -eq 'Profile') {
+        # Hermes pads the profile column only up to fifteen characters, so a
+        # long profile name or display label has no stable whitespace boundary.
+        # The gateway token is the reliable column anchor on every data row.
+        if ($stripped -notmatch '^(?<before>.*?)\s+(?<gateway>running|stopped)\b(?<after>.*)$') {
             continue
         }
 
-        $gateway = if ($fields.Count -ge 3) { $fields[2].Trim() } else { '' }
-        $alias = if ($fields.Count -ge 4 -and $fields[3].Trim() -match '^[A-Za-z0-9._-]+$') { $fields[3].Trim() } else { $null }
+        $beforeGateway = $Matches['before'].Trim()
+        $gateway = $Matches['gateway'].Trim()
+        $remainingFields = @($Matches['after'].Trim() -split '\s{2,}')
+        if ($beforeGateway -notmatch '^(?<label>.+?)\s+(?<model>\S+)$') {
+            continue
+        }
+
+        $label = $Matches['label'].Trim()
+        $model = $Matches['model'].Trim()
+        # Hermes prints display-named profiles as "Display label (canonical-id)".
+        # Commands must use the canonical ID rather than the display label.
+        if ($label -match '^.+\s+\((?<name>[A-Za-z0-9._-]+)\)$') {
+            $name = $Matches['name']
+        }
+        else {
+            $name = $label
+        }
+        if ($name -notmatch '^[A-Za-z0-9._-]+$') {
+            continue
+        }
+
+        $alias = if ($remainingFields.Count -ge 1 -and $remainingFields[0].Trim() -match '^[A-Za-z0-9._-]+$') { $remainingFields[0].Trim() } else { $null }
 
         $profiles += [pscustomobject]@{
             Name = $name
-            Model = if ($fields.Count -ge 2) { $fields[1].Trim() } else { '' }
+            Model = $model
             GatewayRunning = ($gateway -match '(?i)^running')
             GatewayInstalled = $null
             Alias = $alias
@@ -763,16 +838,22 @@ function Request-ProfileRefresh {
         return
     }
 
-    $started = Start-HermesOperation -Arguments @('profile', 'list') -QuietWhenBusy -OnComplete {
+    if (-not (Get-Variable -Scope Script -Name ProfileRefreshGeneration -ErrorAction SilentlyContinue)) {
+        $script:ProfileRefreshGeneration = 0
+    }
+
+    $onComplete = {
         param($result)
 
         $script:ProfileRefreshPending = $false
         if ($result.ExitCode -eq 0) {
+            $script:ProfileRefreshGeneration++
             $script:Profiles = Read-ProfileList "$($result.Output)`n$($result.Error)"
         }
         Update-ProfileMenu
         Request-ProfileGatewayInstallationRefresh
-    }
+    }.GetNewClosure()
+    $started = Start-HermesOperation -Arguments @('profile', 'list') -QuietWhenBusy -OnComplete $onComplete
 
     if ($started) {
         $script:ProfileRefreshPending = $false
@@ -795,7 +876,7 @@ function Get-ProfileGatewayInstalledState {
     if ($clean -match '(?i)Scheduled Task registered|Windows login item installed|Gateway service (?:is )?installed') {
         return $true
     }
-    if ($clean -match '(?is)\b(?:To install|To start):.*?\bgateway install\b|Gateway service is not installed') {
+    if ($clean -match '(?is)\b(?:To install(?:\s+as\s+a\s+Windows\s+Scheduled\s+Task\s+\(auto-start\s+on\s+login\))?|To start):.*?\bgateway install\b|Gateway service (?:is )?not installed') {
         return $false
     }
 
@@ -803,16 +884,62 @@ function Get-ProfileGatewayInstalledState {
 }
 
 function Request-ProfileGatewayInstallationRefresh {
-    param([int]$Index = 0)
+    param(
+        [int]$Index = 0,
+        [int]$Generation = -1
+    )
+
+    if (-not (Get-Variable -Scope Script -Name ProfileRefreshGeneration -ErrorAction SilentlyContinue)) {
+        $script:ProfileRefreshGeneration = 0
+    }
+    if (-not (Get-Variable -Scope Script -Name ProfileGatewayInstallationRefreshInProgress -ErrorAction SilentlyContinue)) {
+        $script:ProfileGatewayInstallationRefreshInProgress = $false
+    }
+    if (-not (Get-Variable -Scope Script -Name ProfileGatewayInstallationRefreshGeneration -ErrorAction SilentlyContinue)) {
+        $script:ProfileGatewayInstallationRefreshGeneration = -1
+    }
+
+    if ($Generation -lt 0) {
+        if ($script:ProfileGatewayInstallationRefreshInProgress) {
+            return
+        }
+        $Generation = $script:ProfileRefreshGeneration
+        $script:ProfileGatewayInstallationRefreshInProgress = $true
+        $script:ProfileGatewayInstallationRefreshGeneration = $Generation
+    }
+
+    # A profile-list refresh replaces the profile objects, so an older chain
+    # must never write its status onto the now-orphaned objects.
+    if ($Generation -ne $script:ProfileRefreshGeneration) {
+        if ($script:ProfileGatewayInstallationRefreshGeneration -eq $Generation) {
+            $script:ProfileGatewayInstallationRefreshInProgress = $false
+            $script:ProfileGatewayInstallationRefreshGeneration = -1
+        }
+        Request-ProfileGatewayInstallationRefresh
+        return
+    }
 
     $profiles = @($script:Profiles)
     if ($script:UpdateInProgress -or -not $script:HermesPath -or $Index -ge $profiles.Count) {
+        if ($script:ProfileGatewayInstallationRefreshGeneration -eq $Generation) {
+            $script:ProfileGatewayInstallationRefreshInProgress = $false
+            $script:ProfileGatewayInstallationRefreshGeneration = -1
+        }
         return
     }
 
     $hermesProfile = $profiles[$Index]
     $onComplete = {
         param($result)
+
+        if ($Generation -ne $script:ProfileRefreshGeneration) {
+            if ($script:ProfileGatewayInstallationRefreshGeneration -eq $Generation) {
+                $script:ProfileGatewayInstallationRefreshInProgress = $false
+                $script:ProfileGatewayInstallationRefreshGeneration = -1
+            }
+            Request-ProfileGatewayInstallationRefresh
+            return
+        }
 
         if ($result.ExitCode -eq 0) {
             $hermesProfile.GatewayInstalled = Get-ProfileGatewayInstalledState "$($result.Output)`n$($result.Error)"
@@ -822,12 +949,16 @@ function Request-ProfileGatewayInstallationRefresh {
         }
 
         Update-ProfileMenu
-        Request-ProfileGatewayInstallationRefresh -Index ($Index + 1)
+        Request-ProfileGatewayInstallationRefresh -Index ($Index + 1) -Generation $Generation
     }.GetNewClosure()
     $started = Start-HermesOperation -Arguments @('-p', $hermesProfile.Name, 'gateway', 'status') -QuietWhenBusy -OnComplete $onComplete
 
     if (-not $started) {
         # A refresh will retry after the command already in flight completes.
+        if ($script:ProfileGatewayInstallationRefreshGeneration -eq $Generation) {
+            $script:ProfileGatewayInstallationRefreshInProgress = $false
+            $script:ProfileGatewayInstallationRefreshGeneration = -1
+        }
         $script:ProfileRefreshPending = $true
     }
 }
@@ -971,7 +1102,7 @@ function Invoke-ProfileGatewayAction {
         [ValidateSet('start', 'stop', 'restart')][string]$Action
     )
 
-    Start-HermesOperation -Arguments @('-p', $Name, 'gateway', $Action) -OnComplete {
+    $onComplete = {
         param($result)
 
         if ($result.ExitCode -eq 0) {
@@ -983,11 +1114,22 @@ function Invoke-ProfileGatewayAction {
         }
         $script:ProfileRefreshPending = $true
         Request-StatusRefresh
-    } | Out-Null
+    }.GetNewClosure()
+    Start-HermesOperation -Arguments @('-p', $Name, 'gateway', $Action) -OnComplete $onComplete | Out-Null
 }
 
 function Update-ProfileMenu {
+    # Rebuilding an open drop-down collapses it under the cursor. A later
+    # refresh updates it after the user closes the menu.
+    if ($script:ProfilesMenu.DropDown.Visible) {
+        return
+    }
+
+    $removedItems = @($script:ProfilesMenu.DropDownItems)
     $script:ProfilesMenu.DropDownItems.Clear()
+    foreach ($removedItem in $removedItems) {
+        $removedItem.Dispose()
+    }
 
     if (@($script:Profiles).Count -eq 0) {
         $empty = New-Object System.Windows.Forms.ToolStripMenuItem 'No profiles found'
@@ -1055,11 +1197,12 @@ function Get-HermesInstallDirectory {
         return [IO.Path]::GetFullPath($script:HermesInstallDirectory)
     }
 
-    # Before the first version check lands, derive the install directory from
-    # the executable. Hermes installs its entry point as <install>\bin\hermes.
-    if ($script:HermesPath) {
-        $candidate = Split-Path -Parent (Split-Path -Parent $script:HermesPath)
-        if ($candidate -and (Test-Path -LiteralPath (Join-Path $candidate 'venv'))) {
+    # Native Windows installs keep their launcher in <HERMES_HOME>\bin and the
+    # agent, including its venv, in <HERMES_HOME>\hermes-agent.
+    $hermesHome = if ($env:HERMES_HOME) { $env:HERMES_HOME } elseif ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA 'hermes' } else { $null }
+    if ($hermesHome) {
+        $candidate = Join-Path $hermesHome 'hermes-agent'
+        if (Test-Path -LiteralPath (Join-Path $candidate 'venv')) {
             return [IO.Path]::GetFullPath($candidate)
         }
     }
@@ -1069,10 +1212,10 @@ function Get-HermesInstallDirectory {
 
 function Get-UpdateBlockingProcess {
     <#
-        Mirror the venv guard 'hermes update' enforces on Windows. Any live
-        process running from, or importing out of, this install's venv keeps
-        native .pyd files mapped, and a dependency sync that dies partway
-        strands the install between versions, so Hermes refuses to start.
+        Mirror the venv guard 'hermes update' enforces on Windows. A live
+        process running from this install's venv keeps native .pyd files
+        mapped, and a dependency sync that dies partway strands the install
+        between versions, so Hermes refuses to start.
 
         Gateway processes are reported separately. Hermes pauses them before
         the update and restarts them afterwards, so stopping them here would
@@ -1080,10 +1223,9 @@ function Get-UpdateBlockingProcess {
     #>
     $installDirectory = Get-HermesInstallDirectory
     if (-not $installDirectory) {
-        return @()
+        throw 'Could not determine the Hermes installation directory. Hermes Companion will not start an update until it can identify the Python environment.'
     }
 
-    $rootPrefix = $installDirectory.TrimEnd('\') + '\'
     $venvPrefix = (Join-Path $installDirectory 'venv').TrimEnd('\') + '\'
 
     try {
@@ -1091,20 +1233,16 @@ function Get-UpdateBlockingProcess {
             Select-Object ProcessId, ParentProcessId, Name, ExecutablePath, CommandLine
     }
     catch {
-        return @()
+        throw "Could not inspect running processes before the update. $($_.Exception.Message)"
     }
 
     $blockers = foreach ($process in $snapshot) {
         $executable = if ($process.ExecutablePath) { $process.ExecutablePath } else { '' }
         $commandLine = if ($process.CommandLine) { $process.CommandLine } else { '' }
 
+        # Only an executable in the venv can hold its native extensions open.
+        # A shell or editor that merely mentions this path must stay out of scope.
         $isHolder = $executable.StartsWith($venvPrefix, [StringComparison]::OrdinalIgnoreCase)
-        if (-not $isHolder) {
-            $isHolder = $commandLine.IndexOf($venvPrefix, [StringComparison]::OrdinalIgnoreCase) -ge 0
-        }
-        if (-not $isHolder -and $commandLine.IndexOf('hermes_cli.main', [StringComparison]::OrdinalIgnoreCase) -ge 0) {
-            $isHolder = $commandLine.IndexOf($rootPrefix, [StringComparison]::OrdinalIgnoreCase) -ge 0
-        }
         if (-not $isHolder) {
             continue
         }
@@ -1166,19 +1304,43 @@ function Get-ProcessTreeId {
 }
 
 function Stop-UpdateBlockingProcess {
-    param($Blockers)
+    param(
+        $Blockers,
+        $Processes,
+        [switch]$ListOnly
+    )
 
-    try {
-        $snapshot = Get-CimInstance Win32_Process -ErrorAction Stop |
-            Select-Object ProcessId, ParentProcessId, Name, ExecutablePath
-    }
-    catch {
-        $snapshot = @()
+    if ($ListOnly) {
+        try {
+            $snapshot = Get-CimInstance Win32_Process -ErrorAction Stop |
+                Select-Object ProcessId, ParentProcessId, Name, ExecutablePath, CommandLine
+        }
+        catch {
+            throw "Could not inspect the full process tree before the update. $($_.Exception.Message)"
+        }
+
+        $identifiers = [System.Collections.Generic.List[int]]::new()
+        foreach ($blocker in $Blockers) {
+            foreach ($identifier in (Get-ProcessTreeId -ProcessId $blocker.ProcessId -Snapshot $snapshot)) {
+                if (-not $identifiers.Contains($identifier)) {
+                    $identifiers.Add($identifier)
+                }
+            }
+        }
+
+        $processesToStop = foreach ($identifier in $identifiers) {
+            $snapshot | Where-Object { $_.ProcessId -eq $identifier } | Select-Object -First 1
+        }
+        return @($processesToStop)
     }
 
-    foreach ($blocker in $Blockers) {
-        foreach ($identifier in (Get-ProcessTreeId -ProcessId $blocker.ProcessId -Snapshot $snapshot)) {
-            try { Stop-Process -Id $identifier -Force -ErrorAction Stop } catch {}
+    foreach ($process in $Processes) {
+        try {
+            Stop-Process -Id $process.ProcessId -Force -ErrorAction Stop
+        }
+        catch {
+            # A process can exit after the confirmation and needs no further action.
+            Write-Verbose "Could not stop process $($process.ProcessId): $($_.Exception.Message)"
         }
     }
 }
@@ -1205,7 +1367,7 @@ function Format-BlockerList {
 
     $items = @($Blockers)
     $lines = foreach ($blocker in ($items | Select-Object -First 6)) {
-        $command = $blocker.CommandLine
+        $command = if ($blocker.CommandLine) { $blocker.CommandLine } else { '' }
         if ($command.Length -gt 90) { $command = $command.Substring(0, 90) + '...' }
         "  $($blocker.Name) (PID $($blocker.ProcessId))  $command"
     }
@@ -1242,12 +1404,20 @@ function Start-HermesUpdate {
     $versionLine = if ($script:HermesVersion) { "Installed version: v$($script:HermesVersion)" } else { 'Installed version: unknown' }
     $statusLine = if ($null -eq $script:UpdateBehind) { 'Update status: unknown' } else { "Update status: $(Get-UpdateSummaryText)" }
 
-    # Name every process that will be stopped, so the one confirmation covers
-    # all of it. Hermes handles its own gateway, so it is excluded.
-    $blockers = @(Get-UpdateBlockingProcess | Where-Object { -not $_.IsGateway })
+    # Compute the full process tree before the user confirms it. Hermes handles
+    # its own gateway, so it is excluded from the companion's kill set.
+    try {
+        $blockers = @(Get-UpdateBlockingProcess | Where-Object { -not $_.IsGateway })
+        $killSet = @(Stop-UpdateBlockingProcess -Blockers $blockers -ListOnly)
+    }
+    catch {
+        Show-CompanionError "The update was not started.`n`n$($_.Exception.Message)"
+        return
+    }
+
     $blockerNote = ''
-    if ($blockers.Count -gt 0) {
-        $blockerNote = "`n`nThese Hermes processes hold the Python environment and will be stopped:`n$(Format-BlockerList $blockers)`n`nUnsaved work in them is lost. The dashboard starts again when the update ends."
+    if ($killSet.Count -gt 0) {
+        $blockerNote = "`n`nThese processes will be stopped:`n$(Format-BlockerList $killSet)`n`nUnsaved work in them is lost. The dashboard starts again when the update ends."
     }
 
     $answer = [System.Windows.Forms.MessageBox]::Show(
@@ -1269,22 +1439,55 @@ function Start-HermesUpdate {
     if (-not (Wait-ActiveOperationDrained)) {
         $script:UpdateInProgress = $false
         $script:RestartDashboardAfterUpdate = $false
-        Show-CompanionError 'The update was cancelled because a Hermes status command did not finish. Try again in a moment.'
+        Show-CompanionError 'The update was cancelled because the active Hermes command did not finish before the eight-second drain period. Try again in a moment.'
         Update-TrayDisplay
         return
     }
 
-    # Re-read the blockers. The list shown in the dialog can be stale by the
-    # time the user answers it.
-    $blockers = @(Get-UpdateBlockingProcess | Where-Object { -not $_.IsGateway })
-    if ($blockers.Count -gt 0) {
-        Stop-UpdateBlockingProcess $blockers
+    # Re-read the process tree after draining companion work. Do not expand the
+    # approved scope if a different Hermes process appeared while the dialog was open.
+    try {
+        $blockers = @(Get-UpdateBlockingProcess | Where-Object { -not $_.IsGateway })
+        $currentKillSet = @(Stop-UpdateBlockingProcess -Blockers $blockers -ListOnly)
+    }
+    catch {
+        $script:UpdateInProgress = $false
+        Show-CompanionError "The update was cancelled.`n`n$($_.Exception.Message)"
+        Restore-DashboardAfterUpdate
+        Update-TrayDisplay
+        Request-StatusRefresh
+        return
+    }
+
+    $approvedProcessIds = @($killSet | ForEach-Object { $_.ProcessId } | Sort-Object)
+    $currentProcessIds = @($currentKillSet | ForEach-Object { $_.ProcessId } | Sort-Object)
+    if (Compare-Object -ReferenceObject $approvedProcessIds -DifferenceObject $currentProcessIds) {
+        $script:UpdateInProgress = $false
+        Show-CompanionError 'The Hermes processes changed while the update confirmation was open. No processes were stopped. Start the update again to review the current process list.'
+        Restore-DashboardAfterUpdate
+        Update-TrayDisplay
+        Request-StatusRefresh
+        return
+    }
+
+    if ($currentKillSet.Count -gt 0) {
+        Stop-UpdateBlockingProcess -Processes $currentKillSet
         $script:DashboardRunning = $false
         # Windows releases the mapped extension files a moment after exit.
         Start-Sleep -Milliseconds 1500
     }
 
-    $remaining = @(Get-UpdateBlockingProcess | Where-Object { -not $_.IsGateway })
+    try {
+        $remaining = @(Get-UpdateBlockingProcess | Where-Object { -not $_.IsGateway })
+    }
+    catch {
+        $script:UpdateInProgress = $false
+        Show-CompanionError "The update was cancelled.`n`n$($_.Exception.Message)"
+        Restore-DashboardAfterUpdate
+        Update-TrayDisplay
+        Request-StatusRefresh
+        return
+    }
     if ($remaining.Count -gt 0) {
         $script:UpdateInProgress = $false
         Show-CompanionError "The update was cancelled because these Hermes processes could not be stopped:`n`n$(Format-BlockerList $remaining)`n`nStop them yourself, then try again."
@@ -1308,6 +1511,14 @@ function Invoke-HermesUpdateProcess {
         update prints a lot and runs for minutes, and a pipe that nobody drains
         until exit would block Hermes once the buffer filled.
     #>
+    if (-not $script:LogsPath) {
+        $script:UpdateInProgress = $false
+        Show-CompanionError 'Could not determine the Hermes logs directory. Set HERMES_HOME or LOCALAPPDATA, then try the update again.'
+        Restore-DashboardAfterUpdate
+        Update-TrayDisplay
+        return
+    }
+
     try {
         New-Item -ItemType Directory -Path $script:LogsPath -Force -ErrorAction Stop | Out-Null
     }
@@ -1319,10 +1530,9 @@ function Invoke-HermesUpdateProcess {
         return
     }
 
-    # Keep the latest complete update output where the menu can open it after
-    # the process ends. A temporary log made failure reports point at a file
-    # that was already deleted.
-    $logFile = Join-Path $script:LogsPath 'update.log'
+    # Hermes appends its own update.log while it runs. Keep the companion's
+    # redirected output separate so the two writers never corrupt either log.
+    $logFile = Join-Path $script:LogsPath 'hermes-companion-update.log'
     $commandLine = '"{0}" update < NUL > "{1}" 2>&1' -f $script:HermesPath, $logFile
     $workingDirectory = Get-HermesInstallDirectory
     if (-not $workingDirectory) {
@@ -1350,6 +1560,7 @@ function Invoke-HermesUpdateProcess {
             LogFile = $logFile
             StartedAt = [DateTime]::UtcNow
             TimeoutSeconds = 3600
+            TimeoutReported = $false
         }
         $script:UpdateInProgress = $true
         $script:UpdateStatusText = 'Starting...'
@@ -1404,11 +1615,21 @@ function Read-LogTailText {
     }
 
     try {
+        $discardFirstLine = $false
         if ($stream.Length -gt $ByteCount) {
-            $stream.Seek(-$ByteCount, [System.IO.SeekOrigin]::End) | Out-Null
+            $start = $stream.Length - $ByteCount
+            $stream.Seek($start - 1, [System.IO.SeekOrigin]::Begin) | Out-Null
+            $previousByte = $stream.ReadByte()
+            $discardFirstLine = $previousByte -ne 10 -and $previousByte -ne 13
+            $stream.Seek($start, [System.IO.SeekOrigin]::Begin) | Out-Null
         }
         $reader = New-Object System.IO.StreamReader($stream, [System.Text.Encoding]::UTF8)
         try {
+            # A byte tail can start in the middle of a UTF-8 character. Drop
+            # its partial line before it reaches any user-facing update text.
+            if ($discardFirstLine) {
+                $reader.ReadLine() | Out-Null
+            }
             return (Remove-AnsiEscape $reader.ReadToEnd())
         }
         finally {
@@ -1554,9 +1775,20 @@ function Complete-UpdateOperation {
         return
     }
 
-    # A half-finished install is worse than a slow one, so a timed-out update
-    # is reported and released rather than killed.
-    $exitCode = if ($operation.Process.HasExited) { $operation.Process.ExitCode } else { $null }
+    # A half-finished install is worse than a slow one. Keep the process and
+    # the polling lock until it exits, but report the one-hour timeout once.
+    if (-not $operation.Process.HasExited) {
+        if (-not $operation.TimeoutReported) {
+            $operation.TimeoutReported = $true
+            $script:UpdateStatusText = 'Still running after one hour.'
+            $script:RestartDashboardAfterUpdate = $false
+            Show-CompanionError "The Hermes update is still running after an hour.`n`nHermes Companion will keep status polling suspended until it exits. Check the update output before you start Hermes again:`n$($operation.LogFile)"
+            Update-TrayDisplay
+        }
+        return
+    }
+
+    $exitCode = $operation.Process.ExitCode
     $output = Get-UpdateLogTail $operation.LogFile
     $completionLine = Get-UpdateCompletionLine $operation.LogFile
     $warnings = Get-UpdateWarningLines $operation.LogFile
@@ -1569,11 +1801,7 @@ function Complete-UpdateOperation {
     $script:UpdateInProgress = $false
     $script:UpdateStatusText = $null
 
-    if ($null -eq $exitCode) {
-        $script:RestartDashboardAfterUpdate = $false
-        Show-CompanionError "The Hermes update is still running after an hour.`n`nHermes Companion stopped watching it. Check the update output before you start Hermes again:`n$($operation.LogFile)"
-    }
-    elseif ($exitCode -eq 0) {
+    if ($exitCode -eq 0) {
         $script:UpdateNotified = $false
         $script:VersionCheckPending = $true
         $script:ProfileRefreshPending = $true
@@ -1589,10 +1817,14 @@ function Complete-UpdateOperation {
         }
         Restore-DashboardAfterUpdate
     }
+    elseif ($exitCode -eq 2) {
+        $detail = if ($output) { $output } else { 'Hermes returned no output.' }
+        Show-CompanionError "Hermes could not start the update because another Hermes updater or process owns this installation.`n`nClose the conflicting Hermes process, then try again. The update log names the process and gives the remediation steps:`n$($operation.LogFile)`n`n$detail"
+        Restore-DashboardAfterUpdate
+    }
     else {
         $detail = if ($output) { $output } else { 'Hermes returned no output.' }
-        $updateLog = Join-Path $script:LogsPath 'update.log'
-        Show-CompanionError "The Hermes update failed with exit code $exitCode.`n`n$detail`n`nHermes keeps the full output in:`n$updateLog"
+        Show-CompanionError "The Hermes update failed with exit code $exitCode.`n`n$detail`n`nHermes Companion keeps the full output in:`n$($operation.LogFile)"
         Restore-DashboardAfterUpdate
     }
 
@@ -1761,25 +1993,31 @@ $menu.Items.Add($script:UpdateHermesItem) | Out-Null
 $script:UpdateLogItem = New-Object System.Windows.Forms.ToolStripMenuItem 'Open update log'
 $script:UpdateLogItem.ToolTipText = 'Show the output of the Hermes update'
 $script:UpdateLogItem.add_Click({
-    $path = if ($script:UpdateOperation) { $script:UpdateOperation.LogFile } else { Join-Path $script:LogsPath 'update.log' }
-    if (Test-Path -LiteralPath $path) {
+    $path = if ($script:UpdateOperation) { $script:UpdateOperation.LogFile } elseif ($script:LogsPath) { Join-Path $script:LogsPath 'hermes-companion-update.log' } else { $null }
+    if (-not $path) {
+        Show-CompanionError 'Could not determine the Hermes logs directory. Set HERMES_HOME or LOCALAPPDATA, then try again.'
+    }
+    elseif (Test-Path -LiteralPath $path) {
         Start-Process notepad.exe -ArgumentList ('"' + $path + '"')
     }
     else {
         Show-CompanionError "No update log exists yet:`n$path"
     }
-})
+}.GetNewClosure())
 $menu.Items.Add($script:UpdateLogItem) | Out-Null
 
 $logsItem = New-Object System.Windows.Forms.ToolStripMenuItem 'Open logs folder'
 $logsItem.add_Click({
-    if (Test-Path -LiteralPath $script:LogsPath) {
+    if (-not $script:LogsPath) {
+        Show-CompanionError 'Could not determine the Hermes logs directory. Set HERMES_HOME or LOCALAPPDATA, then try again.'
+    }
+    elseif (Test-Path -LiteralPath $script:LogsPath) {
         Start-Process explorer.exe -ArgumentList ('"' + $script:LogsPath + '"')
     }
     else {
         Show-CompanionError "The Hermes logs directory does not exist yet:`n$script:LogsPath"
     }
-})
+}.GetNewClosure())
 $menu.Items.Add($logsItem) | Out-Null
 $menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
 
@@ -1834,12 +2072,12 @@ finally {
     $pollTimer.Stop()
     $refreshTimer.Stop()
     if ($script:ActiveOperation -and -not $script:ActiveOperation.Process.HasExited) {
-        try { $script:ActiveOperation.Process.Kill() } catch {}
+        try { $script:ActiveOperation.Process.Kill() } catch { Write-Verbose 'The active Hermes process was already gone during shutdown.' }
         $script:ActiveOperation.Process.Dispose()
     }
     if ($script:UpdateOperation) {
         # Killing a running update would strand a half-installed Hermes.
-        try { $script:UpdateOperation.Process.Dispose() } catch {}
+        try { $script:UpdateOperation.Process.Dispose() } catch { Write-Verbose 'The update process had already released its resources during shutdown.' }
     }
     $script:TrayIcon.Visible = $false
     $script:TrayIcon.Dispose()
