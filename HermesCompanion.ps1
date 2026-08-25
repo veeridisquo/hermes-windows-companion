@@ -22,7 +22,6 @@ public static class HermesCompanionNativeMethods
 [System.Windows.Forms.Application]::EnableVisualStyles()
 
 $script:AppName = 'Hermes Companion'
-$script:DashboardUrl = 'http://127.0.0.1:9119'
 $script:LogsPath = Join-Path $env:LOCALAPPDATA 'hermes\logs'
 $script:IconPath = Join-Path $PSScriptRoot 'hermes-agent.ico'
 $script:StartupShortcut = Join-Path ([Environment]::GetFolderPath('Startup')) 'Hermes Companion.lnk'
@@ -47,6 +46,8 @@ $script:UpdateProgressReadAt = [DateTime]::MinValue
 $script:UpdateHeartbeatAt = [DateTime]::MinValue
 $script:Profiles = @()
 $script:ProfileRefreshPending = $true
+$script:DefaultDashboardPort = 9119
+$script:DashboardPort = $script:DefaultDashboardPort
 
 function Show-CompanionError {
     param([string]$Message)
@@ -349,7 +350,7 @@ function Update-TrayDisplay {
 function Test-DashboardEndpoint {
     $client = New-Object System.Net.Sockets.TcpClient
     try {
-        $connection = $client.ConnectAsync('127.0.0.1', 9119)
+        $connection = $client.ConnectAsync('127.0.0.1', $script:DashboardPort)
         if (-not $connection.Wait(500)) {
             return $false
         }
@@ -365,13 +366,16 @@ function Test-DashboardEndpoint {
 
 function Stop-VerifiedDashboardListener {
     # Hermes v0.20.x can occasionally lose track of a dashboard it launched.
-    # Only stop the loopback:9119 owner when its command line verifies that it
+    # Only stop the selected loopback port owner when its command line verifies that it
     # is the Hermes dashboard, and only after the user explicitly chose Stop.
     try {
-        $connections = Get-NetTCPConnection -LocalAddress '127.0.0.1' -LocalPort 9119 -State Listen -ErrorAction Stop
+        $connections = Get-NetTCPConnection -LocalAddress '127.0.0.1' -LocalPort $script:DashboardPort -State Listen -ErrorAction Stop
         foreach ($processId in ($connections.OwningProcess | Select-Object -Unique)) {
             $processInfo = Get-CimInstance Win32_Process -Filter "ProcessId = $processId" -ErrorAction Stop
-            if ($processInfo.CommandLine -match '(?i)hermes\.exe"?\s+dashboard(?:\s|$)') {
+            # Hermes re-executes the dashboard through Python, so the launcher
+            # name is not reliable. These are Hermes' dashboard-only forms;
+            # deliberately exclude serve because Desktop manages that process.
+            if ($processInfo.CommandLine -match '(?i)(?:hermes(?:\.exe)?"?\s+dashboard|hermes_cli\.main\s+dashboard|hermes_cli/main\.py\s+dashboard)(?:\s|$)') {
                 Stop-Process -Id $processId -Force -ErrorAction Stop
             }
         }
@@ -419,8 +423,22 @@ function Request-StatusRefresh {
             param($dashboardResult)
 
             $dashboardText = "$($dashboardResult.Output)`n$($dashboardResult.Error)"
+            $script:DashboardPort = $script:DefaultDashboardPort
+            # Dashboard status reports dashboard command lines, which makes its
+            # explicit port the authoritative port for the companion to use.
+            foreach ($dashboardLine in ($dashboardText -split "`r?`n")) {
+                if ($dashboardLine -match '(?i)\bdashboard\b' -and $dashboardLine -match '(?i)--port(?:=|\s+)(\d{1,5})(?:\s|$)') {
+                    $candidatePort = [int]$Matches[1]
+                    if ($candidatePort -gt 0 -and $candidatePort -le 65535) {
+                        $script:DashboardPort = $candidatePort
+                        break
+                    }
+                }
+            }
             $reportedRunning = $dashboardResult.ExitCode -eq 0 -and $dashboardText -notmatch '(?i)no hermes dashboard processes running'
-            $script:DashboardRunning = $reportedRunning -or (Test-DashboardEndpoint)
+            # Serve is intentionally absent from dashboard status. A listening
+            # Desktop backend must not be presented as a dashboard we can stop.
+            $script:DashboardRunning = $reportedRunning
             if ($dashboardResult.ExitCode -ne 0 -and -not $script:LastError) {
                 $script:LastError = if ($dashboardResult.Error) { $dashboardResult.Error } else { 'Dashboard status failed.' }
             }
@@ -466,15 +484,16 @@ function Show-GatewayStatus {
 }
 
 function Start-Dashboard {
+    $dashboardUrl = 'http://127.0.0.1:{0}' -f $script:DashboardPort
     if (Test-DashboardEndpoint) {
-        $script:DashboardRunning = $true
-        Update-TrayDisplay
-        Show-Notification 'Dashboard already running' $script:DashboardUrl
+        # A listener without a dashboard status record can be Desktop's serve
+        # backend, so leave it unavailable to the dashboard stop action.
+        Show-Notification 'Dashboard port already in use' $dashboardUrl
         return
     }
 
     if (Start-HermesDetached -Arguments @('dashboard', '--no-open')) {
-        Show-Notification 'Dashboard starting' $script:DashboardUrl
+        Show-Notification 'Dashboard starting' $dashboardUrl
         $script:RefreshPending = $true
     }
 }
@@ -493,16 +512,16 @@ function Stop-Dashboard {
             Show-Notification 'Dashboard stopped' 'The Hermes dashboard was stopped.'
         }
         else {
-            $message = if ($result.Error) { $result.Error } elseif ($result.Output) { $result.Output } else { 'The dashboard is still listening on port 9119.' }
+            $message = if ($result.Error) { $result.Error } elseif ($result.Output) { $result.Output } else { "The dashboard is still listening on port $script:DashboardPort." }
             Show-CompanionError "Dashboard stop failed.`n`n$message"
         }
         Request-StatusRefresh
-    } | Out-Null
+    }.GetNewClosure() | Out-Null
 }
 
 function Open-Dashboard {
     if ($script:DashboardRunning) {
-        Start-Process $script:DashboardUrl
+        Start-Process ('http://127.0.0.1:{0}' -f $script:DashboardPort)
     }
     else {
         Start-HermesDetached -Arguments @('dashboard') | Out-Null
