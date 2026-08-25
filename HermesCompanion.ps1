@@ -6,21 +6,6 @@ param(
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
-Add-Type -AssemblyName System.Windows.Forms
-Add-Type -AssemblyName System.Drawing
-Add-Type @'
-using System;
-using System.Runtime.InteropServices;
-
-public static class HermesCompanionNativeMethods
-{
-    [DllImport("user32.dll", CharSet = CharSet.Auto)]
-    public static extern bool DestroyIcon(IntPtr handle);
-}
-'@
-
-[System.Windows.Forms.Application]::EnableVisualStyles()
-
 $script:AppName = 'Hermes Companion'
 $script:LogsPath = if ($env:HERMES_HOME) { Join-Path $env:HERMES_HOME 'logs' } elseif ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA 'hermes\logs' } else { $null }
 $script:IconPath = Join-Path $PSScriptRoot 'hermes-agent.ico'
@@ -48,6 +33,46 @@ $script:Profiles = @()
 $script:ProfileRefreshPending = $true
 $script:DefaultDashboardPort = 9119
 $script:DashboardPort = $script:DefaultDashboardPort
+$script:BootstrapOwnsMutex = $false
+
+function Show-StartupFailure {
+    param([string]$Message)
+
+    $detail = if ($Message) { $Message } else { 'An unknown error occurred.' }
+    $text = "Hermes Companion could not start.`r`n`r`n$detail"
+    $title = 'Hermes Companion startup failed'
+
+    # Add-Type can be the failure, so only use MessageBox after confirming that
+    # the type is available. WScript.Shell supplies a visible fallback when
+    # WinForms itself could not load.
+    try {
+        $messageBoxType = [Type]::GetType('System.Windows.Forms.MessageBox, System.Windows.Forms', $false)
+        if ($messageBoxType) {
+            [System.Windows.Forms.MessageBox]::Show(
+                $text,
+                $title,
+                [System.Windows.Forms.MessageBoxButtons]::OK,
+                [System.Windows.Forms.MessageBoxIcon]::Error
+            ) | Out-Null
+            return
+        }
+    }
+    catch {
+        # The fallback below must also cover an incomplete WinForms load.
+        Write-Verbose 'WinForms could not show the startup failure.'
+    }
+
+    try {
+        $shell = New-Object -ComObject WScript.Shell
+        $shell.Popup($text, 0, $title, 16) | Out-Null
+        return
+    }
+    catch {
+        # A hidden launcher cannot show the error stream, but keep this path
+        # non-throwing for hosts where neither Windows UI API is available.
+        try { [Console]::Error.WriteLine("${title}: $detail") } catch { Write-Verbose 'No startup diagnostic display was available.' }
+    }
+}
 
 function Show-CompanionError {
     param([string]$Message)
@@ -292,25 +317,34 @@ function New-TrayIcon {
 
     # The stopped state reuses the same artwork, greyed and faded. That is a
     # per-pixel colour change at the icon's own size, so nothing is rescaled.
-    $bitmap = $icon.ToBitmap()
-    $icon.Dispose()
+    $bitmap = $null
+    $handle = [IntPtr]::Zero
+    try {
+        $bitmap = $icon.ToBitmap()
 
-    for ($x = 0; $x -lt $bitmap.Width; $x++) {
-        for ($y = 0; $y -lt $bitmap.Height; $y++) {
-            $pixel = $bitmap.GetPixel($x, $y)
-            if ($pixel.A -gt 0) {
-                $gray = [int][Math]::Round((($pixel.R + $pixel.G + $pixel.B) / 3) * 0.55)
-                $alpha = [int][Math]::Round($pixel.A * 0.55)
-                $bitmap.SetPixel($x, $y, [System.Drawing.Color]::FromArgb($alpha, $gray, $gray, $gray))
+        for ($x = 0; $x -lt $bitmap.Width; $x++) {
+            for ($y = 0; $y -lt $bitmap.Height; $y++) {
+                $pixel = $bitmap.GetPixel($x, $y)
+                if ($pixel.A -gt 0) {
+                    $gray = [int][Math]::Round((($pixel.R + $pixel.G + $pixel.B) / 3) * 0.55)
+                    $alpha = [int][Math]::Round($pixel.A * 0.55)
+                    $bitmap.SetPixel($x, $y, [System.Drawing.Color]::FromArgb($alpha, $gray, $gray, $gray))
+                }
             }
         }
-    }
 
-    $handle = $bitmap.GetHicon()
-    $mutedIcon = [System.Drawing.Icon]::FromHandle($handle).Clone()
-    [HermesCompanionNativeMethods]::DestroyIcon($handle) | Out-Null
-    $bitmap.Dispose()
-    return $mutedIcon
+        $handle = $bitmap.GetHicon()
+        return [System.Drawing.Icon]::FromHandle($handle).Clone()
+    }
+    finally {
+        if ($handle -ne [IntPtr]::Zero) {
+            [HermesCompanionNativeMethods]::DestroyIcon($handle) | Out-Null
+        }
+        if ($bitmap) {
+            $bitmap.Dispose()
+        }
+        $icon.Dispose()
+    }
 }
 
 function Show-Notification {
@@ -403,7 +437,10 @@ function Test-DashboardEndpoint {
     $client = New-Object System.Net.Sockets.TcpClient
     try {
         $connection = $client.ConnectAsync('127.0.0.1', $script:DashboardPort)
-        if (-not $connection.Wait(500)) {
+        # This runs on the WinForms thread. A loopback listener normally
+        # answers immediately; a bounded wait keeps an abnormal network stack
+        # from delaying every status refresh.
+        if (-not $connection.Wait(50)) {
             return $false
         }
         return $client.Connected
@@ -414,6 +451,28 @@ function Test-DashboardEndpoint {
     finally {
         $client.Dispose()
     }
+}
+
+function Wait-ForDashboardStop {
+    param([int]$TimeoutMilliseconds = 100)
+
+    $deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMilliseconds)
+    do {
+        if (-not (Test-DashboardEndpoint)) {
+            return $true
+        }
+
+        if ([DateTime]::UtcNow -ge $deadline) {
+            return $false
+        }
+
+        # Process queued WinForms work between short checks. Dashboard shutdown
+        # is usually immediate, but Windows can release a listening port later.
+        [System.Windows.Forms.Application]::DoEvents()
+        Start-Sleep -Milliseconds 25
+    } while ([DateTime]::UtcNow -lt $deadline)
+
+    return -not (Test-DashboardEndpoint)
 }
 
 function Stop-VerifiedDashboardListener {
@@ -436,8 +495,7 @@ function Stop-VerifiedDashboardListener {
         return $false
     }
 
-    Start-Sleep -Milliseconds 300
-    return -not (Test-DashboardEndpoint)
+    return Wait-ForDashboardStop
 }
 
 function Test-ExternalHermesUpdateInProgress {
@@ -683,11 +741,10 @@ function Start-Dashboard {
 }
 
 function Stop-Dashboard {
-    Start-HermesOperation -Arguments @('dashboard', '--stop') -OnComplete {
+    $onComplete = {
         param($result)
 
-        Start-Sleep -Milliseconds 300
-        $stopped = -not (Test-DashboardEndpoint)
+        $stopped = Wait-ForDashboardStop
         if (-not $stopped) {
             $stopped = Stop-VerifiedDashboardListener
         }
@@ -700,7 +757,8 @@ function Stop-Dashboard {
             Show-CompanionError "Dashboard stop failed.`n`n$message"
         }
         Request-StatusRefresh
-    }.GetNewClosure() | Out-Null
+    }.GetNewClosure()
+    Start-HermesOperation -Arguments @('dashboard', '--stop') -OnComplete $onComplete | Out-Null
 }
 
 function Open-Dashboard {
@@ -2012,19 +2070,37 @@ if ($ParsersOnly) {
     return
 }
 
-# Icon construction is eager launch-time work, so it stays after the parser-only exit.
-$script:ActiveIcon = New-TrayIcon
-$script:MutedIcon = New-TrayIcon -Muted
+try {
+    Add-Type -AssemblyName System.Windows.Forms
+    Add-Type -AssemblyName System.Drawing
+    Add-Type @'
+using System;
+using System.Runtime.InteropServices;
 
-$identity = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-$createdNew = $false
-$script:SingleInstanceMutex = New-Object System.Threading.Mutex($true, "Local\HermesCompanion_$identity", [ref]$createdNew)
-if (-not $createdNew) {
-    $script:SingleInstanceMutex.Dispose()
-    exit 0
+public static class HermesCompanionNativeMethods
+{
+    [DllImport("user32.dll", CharSet = CharSet.Auto)]
+    public static extern bool DestroyIcon(IntPtr handle);
 }
+'@
 
-$script:TrayIcon = New-Object System.Windows.Forms.NotifyIcon
+    [System.Windows.Forms.Application]::EnableVisualStyles()
+
+    # Icon construction is eager launch-time work, so it stays after the
+    # parser-only exit and inside the fatal-startup boundary.
+    $script:ActiveIcon = New-TrayIcon
+    $script:MutedIcon = New-TrayIcon -Muted
+
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    $createdNew = $false
+    $script:SingleInstanceMutex = New-Object System.Threading.Mutex($true, "Local\HermesCompanion_$identity", [ref]$createdNew)
+    if (-not $createdNew) {
+        $script:SingleInstanceMutex.Dispose()
+        exit 0
+    }
+    $script:BootstrapOwnsMutex = $true
+
+    $script:TrayIcon = New-Object System.Windows.Forms.NotifyIcon
 $script:TrayIcon.Icon = $script:MutedIcon
 $script:TrayIcon.Text = 'Hermes Companion - checking status'
 $script:TrayIcon.Visible = $true
@@ -2196,7 +2272,7 @@ $script:RefreshTimer.add_Tick({ Request-StatusRefresh -Scheduled }.GetNewClosure
 $script:RefreshTimer.Start()
 
 $applicationContext = New-Object System.Windows.Forms.ApplicationContext
-$exitItem.add_Click({ $applicationContext.ExitThread() })
+$exitItem.add_Click({ $applicationContext.ExitThread() }.GetNewClosure())
 
 try {
     Request-StatusRefresh
@@ -2218,6 +2294,13 @@ finally {
     $menu.Dispose()
     $script:ActiveIcon.Dispose()
     $script:MutedIcon.Dispose()
-    $script:SingleInstanceMutex.ReleaseMutex()
-    $script:SingleInstanceMutex.Dispose()
+    if ($script:BootstrapOwnsMutex) {
+        $script:SingleInstanceMutex.ReleaseMutex()
+        $script:SingleInstanceMutex.Dispose()
+    }
+}
+}
+catch {
+    Show-StartupFailure $_.Exception.Message
+    exit 1
 }
