@@ -31,6 +31,7 @@ $script:UpdateProgressReadAt = [DateTime]::MinValue
 $script:UpdateHeartbeatAt = [DateTime]::MinValue
 $script:Profiles = @()
 $script:ProfileRefreshPending = $true
+$script:ProfileMenuRefreshPending = $false
 $script:DefaultDashboardPort = 9119
 $script:DashboardPort = $script:DefaultDashboardPort
 $script:BootstrapOwnsMutex = $false
@@ -1348,10 +1349,27 @@ function New-ProfileMenu {
     $profilesMenu = New-Object System.Windows.Forms.ToolStripMenuItem 'Hermes profiles'
     $profilesMenu.ToolTipText = 'Profiles configured in Hermes'
     # A refresh can finish while the user is looking at the submenu. Rebuild
-    # after it closes so the loaded profiles are not stranded behind the
-    # placeholder until another manual refresh.
-    $profilesMenu.add_DropDownClosed({ Update-ProfileMenu })
+    # on the next UI tick after it closes. Disposing menu items inside the
+    # close event destroys the drop-down while WinForms is still handling the
+    # click that closed it.
+    $profilesMenu.add_DropDownClosed({ $script:ProfileMenuRefreshPending = $true })
     return $profilesMenu
+}
+
+function Complete-DeferredProfileMenuRefresh {
+    if (-not $script:ProfileMenuRefreshPending) {
+        return
+    }
+    if (-not $script:ProfilesMenu -or $script:ProfilesMenu.IsDisposed) {
+        $script:ProfileMenuRefreshPending = $false
+        return
+    }
+    if ($script:ProfilesMenu.DropDown.Visible) {
+        return
+    }
+
+    $script:ProfileMenuRefreshPending = $false
+    Update-ProfileMenu
 }
 
 function Update-ProfileMenu {
@@ -2081,6 +2099,7 @@ function Invoke-PollTick {
         delegate ends that delegate invocation, which previously prevented
         every step after Update-UpdateProgress from running.
     #>
+    Complete-DeferredProfileMenuRefresh
     Update-UpdateProgress
     Complete-UpdateOperation
     Complete-ActiveOperation

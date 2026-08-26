@@ -28,9 +28,37 @@ Describe 'Hermes Companion profile menu' {
         $script:ProfilesMenu.DropDown.Show((New-Object System.Drawing.Point -10000, -10000))
         Update-ProfileMenu
         $script:ProfilesMenu.DropDown.Close()
+        Complete-DeferredProfileMenuRefresh
 
         @($script:ProfilesMenu.DropDownItems).Count | Should -Be 1
         $script:ProfilesMenu.DropDownItems[0].Text | Should -Be 'probe (active, gateway stopped)'
+    }
+
+    It 'does not dispose a profile submenu inside the drop-down close event' {
+        $script:ProfilesMenu = New-ProfileMenu
+        $script:Profiles = @([pscustomobject]@{
+            Name = 'old-profile'
+            IsActive = $true
+            GatewayRunning = $false
+            GatewayInstalled = $true
+        })
+        Update-ProfileMenu
+        $previousProfileDropDown = $script:ProfilesMenu.DropDownItems[0].DropDown
+
+        $script:ProfilesMenu.DropDown.Show((New-Object System.Drawing.Point -10000, -10000))
+        $script:Profiles = @([pscustomobject]@{
+            Name = 'new-profile'
+            IsActive = $true
+            GatewayRunning = $false
+            GatewayInstalled = $true
+        })
+        Update-ProfileMenu
+        $script:ProfilesMenu.DropDown.Close()
+
+        $previousProfileDropDown.IsDisposed | Should -BeFalse
+        Complete-DeferredProfileMenuRefresh
+        $previousProfileDropDown.IsDisposed | Should -BeTrue
+        $script:ProfilesMenu.DropDownItems[0].Text | Should -Be 'new-profile (active, gateway stopped)'
     }
 
     It 'publishes profiles when the asynchronous profile-list command completes' {
