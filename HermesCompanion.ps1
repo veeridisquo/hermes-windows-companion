@@ -109,6 +109,12 @@ function ConvertTo-NativeArgument {
     return '"' + ($Value -replace '(\\*)"', '$1$1\"' -replace '(\\+)$', '$1$1') + '"'
 }
 
+function ConvertTo-PowerShellLiteral {
+    param([AllowEmptyString()][string]$Value)
+
+    return "'" + $Value.Replace("'", "''") + "'"
+}
+
 function New-HermesProcessStartInfo {
     param(
         [string[]]$Arguments,
@@ -1182,25 +1188,35 @@ function Request-ProfileGatewayInstallationRefresh {
 
 function Get-TerminalLaunch {
     <#
-        Prefer Windows Terminal, which renders the Hermes interface properly,
-        and use a console window where it is not installed.
+        Run Hermes in Windows PowerShell. Prefer Windows Terminal as its host,
+        and use a standalone PowerShell console where it is not installed.
     #>
     param(
         [string]$Title,
-        [string]$Command
+        [string]$ScriptPath
     )
 
+    $powerShell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $powerShellArguments = @(
+        '-NoLogo',
+        '-NoProfile',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-NoExit',
+        '-File',
+        $ScriptPath
+    )
     $windowsTerminal = Join-Path $env:LOCALAPPDATA 'Microsoft\WindowsApps\wt.exe'
     if (Test-Path -LiteralPath $windowsTerminal) {
         return [pscustomobject]@{
             FilePath = $windowsTerminal
-            Arguments = '--title "' + $Title + '" cmd /k ' + $Command
+            Arguments = ((@('--title', $Title, $powerShell) + $powerShellArguments) | ForEach-Object { ConvertTo-NativeArgument $_ }) -join ' '
         }
     }
 
     return [pscustomobject]@{
-        FilePath = Join-Path $env:SystemRoot 'System32\cmd.exe'
-        Arguments = '/k ' + $Command
+        FilePath = $powerShell
+        Arguments = ($powerShellArguments | ForEach-Object { ConvertTo-NativeArgument $_ }) -join ' '
     }
 }
 
@@ -1222,24 +1238,24 @@ function Open-HermesTerminal {
         return
     }
 
+    $hermesArguments = ($Arguments | ForEach-Object { ConvertTo-PowerShellLiteral $_ }) -join ' '
     $lines = @(
-        '@echo off',
-        "title $title",
-        ('call "' + $script:HermesPath + '" ' + (($Arguments | ForEach-Object { ConvertTo-NativeArgument $_ }) -join ' '))
+        ('$Host.UI.RawUI.WindowTitle = ' + (ConvertTo-PowerShellLiteral $Title)),
+        ('& ' + (ConvertTo-PowerShellLiteral $script:HermesPath) + ' ' + $hermesArguments)
     )
 
     # One script per action/profile, rewritten on each launch, so these do not
     # pile up in the temp directory or replace a terminal that is still open.
-    $scriptPath = Join-Path $env:TEMP "HermesCompanion-$ScriptName.cmd"
+    $scriptPath = Join-Path $env:TEMP "HermesCompanion-$ScriptName.ps1"
     try {
-        Set-Content -LiteralPath $scriptPath -Value $lines -Encoding Ascii -ErrorAction Stop
+        Set-Content -LiteralPath $scriptPath -Value $lines -Encoding UTF8 -ErrorAction Stop
     }
     catch {
         Show-CompanionError "Could not prepare the terminal session.`n`n$($_.Exception.Message)"
         return
     }
 
-    $launch = Get-TerminalLaunch -Title $title -Command ('"' + $scriptPath + '"')
+    $launch = Get-TerminalLaunch -Title $title -ScriptPath $scriptPath
     try {
         Start-Process -FilePath $launch.FilePath -ArgumentList $launch.Arguments -ErrorAction Stop
     }

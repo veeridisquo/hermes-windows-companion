@@ -23,7 +23,7 @@ if (Test-Path -LiteralPath $startMenuDirectory) {
 }
 
 # These are the terminal launcher scripts the companion generated.
-$terminalLaunchers = Get-ChildItem -Path $env:TEMP -Filter 'HermesCompanion-*.cmd' -ErrorAction SilentlyContinue
+$terminalLaunchers = Get-ChildItem -Path $env:TEMP -Filter 'HermesCompanion-*.ps1' -ErrorAction SilentlyContinue
 foreach ($terminalLauncher in $terminalLaunchers) {
     Remove-Item -LiteralPath $terminalLauncher.FullName -Force
 }

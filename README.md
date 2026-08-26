@@ -9,8 +9,8 @@ This project is independent and is not affiliated with or endorsed by Nous Resea
 ## Requirements
 
 - Windows 10 or Windows 11
-- Windows Terminal, to open a profile in a terminal. A console window is used when it is absent.
 - Windows PowerShell 5.1 or newer
+- Windows Terminal is optional. A standalone PowerShell console is used when it is absent.
 - Hermes Agent v0.20.5 or newer available as `hermes` on `PATH`
 
 ## Install
@@ -57,7 +57,7 @@ Right-click the Hermes icon in the Windows notification area. Windows may initia
 - **Hermes profiles** lists every profile with its gateway state and marks the active one.
 - Double-click: open or start the Hermes dashboard.
 
-Each profile has a submenu to open Hermes in a terminal with that profile, view its details, open its folder, and control its gateway. When a profile gateway is stopped and has no Windows background gateway, **Install gateway...** appears and Start is disabled. A manually running gateway with no Windows background gateway shows as running, allows Stop, and also offers **Install gateway...**. The installer opens in a terminal because Hermes may ask for confirmation or Windows may ask for administrator approval. Terminals open in Windows Terminal when it is installed, and in a console window otherwise.
+Each profile has a submenu to open Hermes in a terminal with that profile, view its details, open its folder, and control its gateway. When a profile gateway is stopped and has no Windows background gateway, **Install gateway...** appears and Start is disabled. A manually running gateway with no Windows background gateway shows as running, allows Stop, and also offers **Install gateway...**. The installer opens in a terminal because Hermes may ask for confirmation or Windows may ask for administrator approval. Hermes runs in Windows PowerShell inside Windows Terminal when it is installed, and in a standalone PowerShell console otherwise.
 
 **Check for updates** runs `hermes update --check`, the documented way to ask whether an update is available. It always contacts the upstream repository, so the answer is never a cached one. **Update Hermes...** installs the newest version in the background.
 
