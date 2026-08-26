@@ -1239,8 +1239,12 @@ function Open-HermesTerminal {
     }
 
     $hermesArguments = ($Arguments | ForEach-Object { ConvertTo-PowerShellLiteral $_ }) -join ' '
+    # A long-running tray process can retain PATH from before a tool was
+    # installed. Give each interactive terminal the current Windows PATH.
+    $pathRefreshCommand = '$env:Path = @([Environment]::GetEnvironmentVariable(''Path'', ''Machine''), [Environment]::GetEnvironmentVariable(''Path'', ''User'')) -join '';'''
     $lines = @(
         ('$Host.UI.RawUI.WindowTitle = ' + (ConvertTo-PowerShellLiteral $Title)),
+        $pathRefreshCommand,
         ('& ' + (ConvertTo-PowerShellLiteral $script:HermesPath) + ' ' + $hermesArguments)
     )
 

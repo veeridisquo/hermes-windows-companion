@@ -59,8 +59,11 @@ Describe 'Hermes Companion terminal launch' {
             $launcherPath | Should -Exist
             $launcher = Get-Content -LiteralPath $launcherPath -Raw
             $expectedTitleLine = '$Host.UI.RawUI.WindowTitle = ' + "'Hermes - daniel''s profile'"
+            $expectedPathLine = '$env:Path = @([Environment]::GetEnvironmentVariable(''Path'', ''Machine''), [Environment]::GetEnvironmentVariable(''Path'', ''User'')) -join '';'''
             $launcher | Should -Match ([regex]::Escape($expectedTitleLine))
+            $launcher | Should -Match ([regex]::Escape($expectedPathLine))
             $launcher | Should -Match "(?m)^& 'C:\\Program Files\\Hermes\\hermes\.exe' '-p' 'daniel''s profile'"
+            $launcher.IndexOf($expectedPathLine) | Should -BeLessThan $launcher.IndexOf("& 'C:\Program Files\Hermes\hermes.exe'")
             (Join-Path $TestDrive 'HermesCompanion-profile-session.cmd') | Should -Not -Exist
             Should -Invoke Start-Process -Exactly 1
         }
