@@ -74,11 +74,33 @@ Describe 'Hermes Companion profile menu' {
             Error = ''
         })
 
-        @($script:ProfilesMenu.DropDownItems).Count | Should -Be 3
-        $script:ProfilesMenu.DropDownItems[0].Text | Should -Be 'default (active, gateway running)'
-        $script:ProfilesMenu.DropDownItems[1].Text | Should -Be 'long-profile-name (gateway checking)'
-        $script:ProfilesMenu.DropDownItems[2].Text | Should -Be 'personal (gateway checking)'
+        @($script:ProfilesMenu.DropDownItems).Count | Should -Be 2
+        $script:ProfilesMenu.DropDownItems[0].Text | Should -Be 'long-profile-name (gateway checking)'
+        $script:ProfilesMenu.DropDownItems[1].Text | Should -Be 'personal (gateway checking)'
         $script:ProfileRefreshPending | Should -Be $false
+    }
+
+    It 'shows only custom profiles' {
+        $script:ProfilesMenu = New-ProfileMenu
+        $script:Profiles = @(
+            [pscustomobject]@{
+                Name = 'default'
+                IsActive = $true
+                GatewayRunning = $true
+                GatewayInstalled = $true
+            },
+            [pscustomobject]@{
+                Name = 'work'
+                IsActive = $false
+                GatewayRunning = $false
+                GatewayInstalled = $true
+            }
+        )
+
+        Update-ProfileMenu
+
+        @($script:ProfilesMenu.DropDownItems).Count | Should -Be 1
+        $script:ProfilesMenu.DropDownItems[0].Text | Should -Be 'work (gateway stopped)'
     }
 
     It 'publishes the gateway installation state from the asynchronous status command' {

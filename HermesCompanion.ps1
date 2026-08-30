@@ -354,6 +354,7 @@ function Show-Notification {
 function Set-HermesMenuEnabled {
     param([bool]$Enabled)
 
+    $script:OpenChatItem.Enabled = $Enabled
     $script:OpenDashboardItem.Enabled = $Enabled
     $script:DesktopItem.Enabled = $Enabled
     $script:StartDashboardItem.Enabled = $Enabled -and -not $script:DashboardRunning
@@ -1268,6 +1269,10 @@ function Open-HermesTerminal {
     }
 }
 
+function Open-HermesChat {
+    Open-HermesTerminal -Title 'Hermes Chat' -ScriptName 'chat' -Arguments @('-p', 'default')
+}
+
 function Open-ProfileTerminal {
     param([string]$Name)
 
@@ -1405,14 +1410,15 @@ function Update-ProfileMenu {
         $removedItem.Dispose()
     }
 
-    if (@($script:Profiles).Count -eq 0) {
-        $empty = New-Object System.Windows.Forms.ToolStripMenuItem 'No profiles found'
+    $customProfiles = @($script:Profiles | Where-Object { $_.Name -ne 'default' })
+    if ($customProfiles.Count -eq 0) {
+        $empty = New-Object System.Windows.Forms.ToolStripMenuItem 'No custom profiles found'
         $empty.Enabled = $false
         $script:ProfilesMenu.DropDownItems.Add($empty) | Out-Null
         return
     }
 
-    foreach ($hermesProfile in $script:Profiles) {
+    foreach ($hermesProfile in $customProfiles) {
         $name = $hermesProfile.Name
         $labels = @()
         if ($hermesProfile.IsActive) { $labels += 'active' }
@@ -2248,6 +2254,11 @@ $menu.Items.Add($script:VersionSummaryItem) | Out-Null
 $menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
 
 Add-MenuHeading -Menu $menu -Text 'Open'
+
+$script:OpenChatItem = New-Object System.Windows.Forms.ToolStripMenuItem 'Chat'
+$script:OpenChatItem.ToolTipText = 'Open Hermes chat in a terminal'
+$script:OpenChatItem.add_Click({ Open-HermesChat })
+$menu.Items.Add($script:OpenChatItem) | Out-Null
 
 $script:OpenDashboardItem = New-Object System.Windows.Forms.ToolStripMenuItem 'Dashboard'
 $script:OpenDashboardItem.ToolTipText = 'Open the Hermes browser dashboard'

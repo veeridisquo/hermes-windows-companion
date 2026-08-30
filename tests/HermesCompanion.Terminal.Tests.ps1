@@ -72,4 +72,18 @@ Describe 'Hermes Companion terminal launch' {
             $env:TEMP = $previousTemp
         }
     }
+
+    It 'opens chat with the default profile' {
+        Mock Open-HermesTerminal { }
+
+        Open-HermesChat
+
+        Should -Invoke Open-HermesTerminal -Exactly 1 -ParameterFilter {
+            $Title -eq 'Hermes Chat' -and
+            $ScriptName -eq 'chat' -and
+            @($Arguments).Count -eq 2 -and
+            $Arguments[0] -eq '-p' -and
+            $Arguments[1] -eq 'default'
+        }
+    }
 }

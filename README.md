@@ -2,7 +2,7 @@
 
 A deliberately small, community-maintained Windows notification-area companion for an existing native [Hermes Agent](https://github.com/NousResearch/hermes-agent) installation.
 
-It provides shortcuts for checking and controlling the Hermes gateway, starting or stopping the dashboard, opening Hermes Desktop, and opening logs. It delegates Hermes operations to the official `hermes` CLI.
+It provides shortcuts for opening Hermes chat, checking and controlling the Hermes gateway, starting or stopping the dashboard, opening Hermes Desktop, and opening logs. It delegates Hermes operations to the official `hermes` CLI.
 
 This project is independent and is not affiliated with or endorsed by Nous Research.
 
@@ -54,10 +54,11 @@ Right-click the Hermes icon in the Windows notification area. Windows may initia
 - A dimmed Hermes icon means both are stopped or Hermes is unavailable.
 - The tray menu and tooltip show the detailed state.
 - The tray menu shows the installed Hermes version and whether an update is available.
-- **Hermes profiles** lists every profile with its gateway state and marks the active one.
+- **Chat** opens the default Hermes chat directly in a terminal.
+- **Hermes profiles** lists custom profiles with their gateway state and marks the active one. The default profile is omitted because **Chat** opens it directly.
 - Double-click: open or start the Hermes dashboard.
 
-Each profile has a submenu to open Hermes in a terminal with that profile, view its details, open its folder, and control its gateway. When a profile gateway is stopped and has no Windows background gateway, **Install gateway...** appears and Start is disabled. A manually running gateway with no Windows background gateway shows as running, allows Stop, and also offers **Install gateway...**. The installer opens in a terminal because Hermes may ask for confirmation or Windows may ask for administrator approval. Hermes runs in Windows PowerShell inside Windows Terminal when it is installed, and in a standalone PowerShell console otherwise.
+Each custom profile has a submenu to open Hermes in a terminal with that profile, view its details, open its folder, and control its gateway. When a profile gateway is stopped and has no Windows background gateway, **Install gateway...** appears and Start is disabled. A manually running gateway with no Windows background gateway shows as running, allows Stop, and also offers **Install gateway...**. The installer opens in a terminal because Hermes may ask for confirmation or Windows may ask for administrator approval. Hermes runs in Windows PowerShell inside Windows Terminal when it is installed, and in a standalone PowerShell console otherwise.
 
 **Check for updates** runs `hermes update --check`, the documented way to ask whether an update is available. It always contacts the upstream repository, so the answer is never a cached one. **Update Hermes...** installs the newest version in the background.
 
